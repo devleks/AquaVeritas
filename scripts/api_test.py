@@ -7,6 +7,7 @@ import xarray as xr
 import base64
 import numpy as np
 import io
+import json
 from PIL import Image
 from io import BytesIO
 
@@ -114,16 +115,29 @@ def test_mapbox():
 
 def test_sentinel():
     params = {
-        "spectral_bands": ["rededge1", "rededge2", "rededge3"],
+        "spectral_bands": ["red", "green", "blue"],
         "size_km": 5.0,
-        "return_type": "png"
+        "return_type": "array"
     }
     response = requests.get("http://localhost:9005/data/current/image/sentinel", params=params)
 
     if response.status_code == 200:
-        # Convert the raw bytes back into a PIL Image
-        img = Image.open(BytesIO(response.content))
-        img.show()  # This opens your default OS image viewer
+        if params["return_type"] == "png":
+            metadata = json.loads(response.headers.get("sentinel_metadata"))
+            print(f"Sentinel metadata: {metadata}")
+            if metadata["image_available"]:
+                img = Image.open(BytesIO(response.content))
+                img.show()  # This opens your default OS image viewer
+            else:    
+                print("No image available")
+        else:
+            metadata = response.json()["sentinel_metadata"]
+            print(f"Sentinel metadata: {metadata}")
+            if metadata["image_available"]:
+                image = response.json()["image"]
+                print(f"Sentinel image: {image["metadata"]["shape"]}")
+            else:
+                print("No image available")
     else:
         print(f"Error: Received status code {response.status_code}")
         print(f"Response: {response.text}")
@@ -213,7 +227,7 @@ def test_sentinel_hyperspectral():
     # mapbox image
 
 if __name__ == "__main__":
-    #test_sentinel()
+    test_sentinel()
     #test_mapbox()
     #mapbox_sentinel_test()
-    test_sentinel_hyperspectral()
+    #test_sentinel_hyperspectral()

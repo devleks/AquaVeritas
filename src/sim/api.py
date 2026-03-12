@@ -1,12 +1,9 @@
-from fastapi import FastAPI, Request, HTTPException, Query, Response, APIRouter
+from fastapi import FastAPI, HTTPException, Query, Response
 from typing import List, Literal
-import io
 import base64
-import numpy as np
+import json
 from ImagingProviders.sentinel_provider import SentinelProvider
 from ImagingProviders.mapbox_provider import MapboxlProvider
-from fastapi.responses import StreamingResponse
-import traceback
 
 api = FastAPI()
 
@@ -15,6 +12,8 @@ mapbox = MapboxlProvider()
 
 
 def serialize_xarray_dataset(ds):
+    if ds is None or not hasattr(ds, "to_array"):
+        raise ValueError("Expected an xarray.Dataset-like object for serialization")
     da = ds.to_array()
     metadata = {
         "shape": da.shape,        # e.g., (3, 512, 512)
@@ -50,16 +49,46 @@ async def get_sentinel_image(
     if data is None:
         raise HTTPException(status_code=500, detail="Error fetching satellite position from shared data - is the simulator running?")
     #try:
-    data = sentinel.get_single_image_lon_lat(data[0], data[1], timestamp, data_type=return_type, spectral_bands=spectral_bands, size_km=size_km)
+    sentinel_data = sentinel.get_single_image_lon_lat(data[0], data[1], timestamp, data_type=return_type, spectral_bands=spectral_bands, size_km=size_km)
     #except Exception as e:
     #    error_details = traceback.format_exc()
     #    raise HTTPException(status_code=500, detail="Error fetching Sentinel image: " + error_details)
     #image = serialize_xarray_dataset(data["image"]) # this was used befor we returned a png
+    image = sentinel_data["image"]
+    metadata = sentinel_data["metadata"]
+
     if return_type == "png":
-        return StreamingResponse(data, media_type="image/png")
+        headers = {
+            "sentinel_metadata": json.dumps(
+                {
+                    "image_available": metadata["image_available"],
+                    "source": metadata["source"],
+                    "spectral_bands": metadata["spectral_bands"],
+                    "footprint": metadata["footprint"],
+                    "size_km": metadata["size_km"],
+                    "cloud_cover": metadata["cloud_cover"],
+                    "satellite_position": data,
+                    "timestamp": timestamp,
+                }
+            ),
+            "Access-Control-Expose-Headers": "sentinel_metadata",
+        }
+        return Response(content=image.getvalue() if image is not None else "", media_type="image/png", headers=headers)
     elif return_type == "array":
-        image = serialize_xarray_dataset(data)
-        return image
+        image = serialize_xarray_dataset(image) if metadata["image_available"] and image is not None else None
+        return {
+            "image": image,
+            "sentinel_metadata": {
+                "image_available": metadata["image_available"],
+                "source": metadata["source"],
+                "spectral_bands": metadata["spectral_bands"],
+                "footprint": metadata["footprint"],
+                "size_km": metadata["size_km"],
+                "cloud_cover": metadata["cloud_cover"],
+                "satellite_position": data,
+                "timestamp": timestamp
+            }
+        }
     else:
         raise HTTPException(status_code=400, detail="Invalid return_type specified")
 

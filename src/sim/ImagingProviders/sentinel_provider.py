@@ -7,7 +7,6 @@ import numpy as np
 
 class SentinelProvider:
 
-
     def __init__(self):
         self.client = Client.open("https://earth-search.aws.element84.com/v1")
         #self.bands = ['aot', 'blue', 'coastal', 'green', 'nir', 'nir08', 'nir09', 'red', 'rededge1', 'rededge2', 'rededge3', 'scl', 'swir16', 'swir22', 'visual', 'wvp']
@@ -18,14 +17,37 @@ class SentinelProvider:
 
         bbox = self.get_bbox_around_lon_lat(lon, lat, image_size_km=size_km)
 
-        image_data =  self.get_single_array_image_bbox(bbox, datetime, spectral_bands=spectral_bands)
+        image_data, metadata = self.get_single_array_image_bbox(bbox, datetime, spectral_bands=spectral_bands)
+        if image_data is None:
+            metadata = {
+                "image_available": False,
+                "source": None,
+                "spectral_bands": spectral_bands,
+                "footprint": list(bbox),
+                "size_km": size_km,
+                "cloud_cover": None
+            }
+        else:
+            metadata = {
+                "image_available": True,
+                "source": metadata["platform"],
+                "spectral_bands": spectral_bands,
+                "footprint": list(bbox),
+                "size_km": size_km,
+                "cloud_cover": metadata["cloud_cover"]
+            }
 
         if data_type == "png":
-            return self.image_to_png(image_data, spectral_bands=spectral_bands)
+            image = self.image_to_png(image_data, spectral_bands=spectral_bands) if image_data is not None else None
         elif data_type == "array":
-            return image_data
+            image = image_data if image_data is not None else None
         else:
             raise ValueError("data_type must be either 'png' or 'array'")
+
+        return {
+            "image": image,
+            "metadata": metadata
+        }
         
     def get_single_array_image_bbox(self, bbox, datetime, spectral_bands=['red', 'green', 'blue']):
         search = self.client.search(
@@ -37,7 +59,9 @@ class SentinelProvider:
         )
 
         # Get the first item to extract metadata
-        item = next(search.items())
+        item = next(search.items(), None)
+        if item is None:
+            return None, None
 
         metadata = {
             "id": item.id,
@@ -55,7 +79,7 @@ class SentinelProvider:
             chunks={"x": 2048, "y": 2048}
         ).isel(time=0)
 
-        return image_data
+        return image_data, metadata
     
     # ------------------------------------
     # Helper Functions
