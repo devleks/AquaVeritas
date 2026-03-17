@@ -96,8 +96,8 @@ async def get_sentinel_image(
 
 @api.get("/data/current/image/mapbox")
 async def get_mapbox_image(
-    lat: float = Query(..., description="The latitude of the location", ge=-90, le=90),
-    lon: float = Query(..., description="The longitude of the location", ge=-180, le=180)
+    lon: float = Query(..., description="The longitude of the location", ge=-180, le=180),
+    lat: float = Query(..., description="The latitude of the location", ge=-90, le=90)
 ):
     try:
         satellite_position = getattr(api.state, "shared_data", {}).get("satellite_position", None)
@@ -119,6 +119,92 @@ async def get_mapbox_image(
             "pitch": metadata["pitch"],
             "satellite_position": satellite_position,
             "timestamp": timestamp
+        }
+        headers = {
+            "mapbox_metadata": json.dumps(response_metadata),
+            "Access-Control-Expose-Headers": "mapbox_metadata",
+        }
+
+        return Response(content=image if image is not None else b"", media_type="image/png",headers=headers)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(e)
+        raise HTTPException(status_code=500, detail="Error fetching Mapbox image: " + str(e))
+
+
+@api.get("/data/image/sentinel")
+async def get_sentinel_image_lon_lat(
+    lon: float = Query(..., description="The longitude of the location", ge=-180, le=180),
+    lat: float = Query(..., description="The latitude of the location", ge=-90, le=90),
+    timestamp: str = Query(..., description="The timestamp of the image", format="date-time"),
+    spectral_bands: List[str] = Query(default=["red", "green", "blue"]),
+    size_km: float = 10.0,
+    return_type: Literal["array", "png"] = "png"
+):
+    #try:
+    sentinel_data = sentinel.get_single_image_lon_lat(lon, lat, timestamp, data_type=return_type, spectral_bands=spectral_bands, size_km=size_km)
+    #except Exception as e:
+    #    error_details = traceback.format_exc()
+    #    raise HTTPException(status_code=500, detail="Error fetching Sentinel image: " + error_details)
+    #image = serialize_xarray_dataset(data["image"]) # this was used befor we returned a png
+    image = sentinel_data["image"]
+    metadata = sentinel_data["metadata"]
+
+    if return_type == "png":
+        headers = {
+            "sentinel_metadata": json.dumps(
+                {
+                    "image_available": metadata["image_available"],
+                    "source": metadata["source"],
+                    "spectral_bands": metadata["spectral_bands"],
+                    "footprint": metadata["footprint"],
+                    "size_km": metadata["size_km"],
+                    "cloud_cover": metadata["cloud_cover"],
+                    "datetime": metadata["datetime"]
+                }
+            ),
+            "Access-Control-Expose-Headers": "sentinel_metadata",
+        }
+        return Response(content=image.getvalue() if image is not None else "", media_type="image/png", headers=headers)
+    elif return_type == "array":
+        image = serialize_xarray_dataset(image) if metadata["image_available"] and image is not None else None
+        return {
+            "image": image,
+            "sentinel_metadata": {
+                "image_available": metadata["image_available"],
+                "source": metadata["source"],
+                "spectral_bands": metadata["spectral_bands"],
+                "footprint": metadata["footprint"],
+                "size_km": metadata["size_km"],
+                "cloud_cover": metadata["cloud_cover"],
+                "datetime": metadata["datetime"]
+            }
+        }
+    else:
+        raise HTTPException(status_code=400, detail="Invalid return_type specified")
+
+
+@api.get("/data/image/mapbox")
+async def get_mapbox_image_lon_lat(
+    lon_target: float = Query(..., description="The longitude of the target location", ge=-180, le=180),
+    lat_target: float = Query(..., description="The latitude of the target location", ge=-90, le=90),
+    lon_satellite: float = Query(..., description="The longitude of the satellite", ge=-180, le=180),
+    lat_satellite: float = Query(..., description="The latitude of the satellite", ge=-90, le=90),
+    alt_satellite: float = Query(..., description="The altitude of the satellite", ge=0),
+):
+    try:
+        mapbox_data = mapbox.get_target_image(lon_satellite, lat_satellite, alt_satellite, lon_target, lat_target)
+        image = mapbox_data["image"]
+        metadata = mapbox_data["metadata"]
+
+        response_metadata = {
+            "target_visible": metadata["target_visible"],
+            "image_available": metadata["image_available"],
+            "elevation_degrees": metadata["elevation_degrees"],
+            "zoom_factor": metadata["zoom_factor"],
+            "bearing": metadata["bearing"],
+            "pitch": metadata["pitch"],
         }
         headers = {
             "mapbox_metadata": json.dumps(response_metadata),

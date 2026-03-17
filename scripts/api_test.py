@@ -119,6 +119,38 @@ def test_mapbox():
     plt.axis('off')
     plt.show()
 
+def test_mapbox_lon_lat():
+ 
+    params = {
+        "lon_target": 6.6323,
+        "lat_target": 46.5197,
+        "lon_satellite": 6.6323,
+        "lat_satellite": 46.5197,
+        "alt_satellite": 500
+    }
+    response = requests.get("http://localhost:9005/data/image/mapbox", params=params)
+
+    # check whether the request returned an error
+    if response.status_code != 200:
+        print(f"Error: Received status code {response.status_code}")
+        print(f"Response: {response.text}")
+        print(response.content)
+        exit(1)
+
+    metadata = json.loads(response.headers.get("mapbox_metadata"))
+    print(f"Mapbox metadata: {metadata}")
+    if not metadata.get("image_available", False):
+        print("No image available")
+        return
+
+    # show the image
+    image = mpimg.imread(io.BytesIO(response.content), format='PNG')
+    plt.figure(figsize=(8, 8))
+    plt.imshow(image)
+    plt.axis('off')
+    plt.show()
+
+
 def test_sentinel():
     params = {
         "spectral_bands": ["red", "green", "blue"],
@@ -126,6 +158,38 @@ def test_sentinel():
         "return_type": "png"
     }
     response = requests.get("http://localhost:9005/data/current/image/sentinel", params=params)
+
+    if response.status_code == 200:
+        if params["return_type"] == "png":
+            metadata = json.loads(response.headers.get("sentinel_metadata"))
+            print(f"Sentinel metadata: {metadata}")
+            if metadata["image_available"]:
+                img = Image.open(BytesIO(response.content))
+                img.show()  # This opens your default OS image viewer
+            else:    
+                print("No image available")
+        else:
+            metadata = response.json()["sentinel_metadata"]
+            print(f"Sentinel metadata: {metadata}")
+            if metadata["image_available"]:
+                image = response.json()["image"]
+                print(f"Sentinel image: {image["metadata"]["shape"]}")
+            else:
+                print("No image available")
+    else:
+        print(f"Error: Received status code {response.status_code}")
+        print(f"Response: {response.text}")
+
+def test_sentinel_lon_lat():
+    params = {
+        "lon": 6.6323,
+        "lat": 46.5197,
+        "timestamp": "2024-07-28T23:59:59.459134",
+        "spectral_bands": ["red", "green", "blue"],
+        "size_km": 15.0,
+        "return_type": "array"
+    }
+    response = requests.get("http://localhost:9005/data/image/sentinel", params=params)
 
     if response.status_code == 200:
         if params["return_type"] == "png":
@@ -233,7 +297,9 @@ def test_sentinel_hyperspectral():
     # mapbox image
 
 if __name__ == "__main__":
-    #test_sentinel()
-    test_mapbox()
+    test_sentinel()
+    #test_mapbox()
     #mapbox_sentinel_test()
     #test_sentinel_hyperspectral()
+    #test_sentinel_lon_lat()
+    #test_mapbox_lon_lat()
