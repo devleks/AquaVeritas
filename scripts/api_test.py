@@ -103,7 +103,7 @@ def _test_mapbox_endpoint(endpoint: str, params: Dict[str, Any]) -> None:
 def test_sentinel_current() -> None:
     params = {
         "spectral_bands": ["red", "green", "blue"],
-        "size_km": 10.0,
+        "size_km": 5.0,
         "return_type": "png",
         #"window_seconds": 60.0
     }
