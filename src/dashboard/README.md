@@ -14,7 +14,7 @@ propagation and calls the REST API here roughly once per second to:
 ### Setup
 
 ```bash
-cd /home/user/DPHI/FakeSat-Public/src/dashboard
+cd /home/user/DPHI/SimSat/src/dashboard
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
