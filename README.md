@@ -1,6 +1,25 @@
 # SimSat
-
 This tool simulates the accessibility of Earth imagery from a satellite. An orbit propagator calculates the satellite position over time and an API serves as an interface to on-board users, sharing the current position, timestamp and providing satellite imagery from that location. A web-based dashboard controls and visualizes the simulation.
+
+## Upcoming Hackathon: AI in Space | Liquid AI x DPhi Space
+
+This is the official repository for the upcoming [AI in Space Hackathon](https://luma.com/n9cw58h0), organised in partnership between DPhi Space and Liquid AI.
+
+This is a fully online event, open to builders from all around the globe.
+
+<div align="center">
+  <a href="https://luma.com/n9cw58h0">
+    <img
+      src="banner.jpeg"
+      alt="SimSat"
+      style="width: 70%; max-width: 70%; height: auto; display: inline-block; margin-bottom: 0.5em; margin-top: 0.5em;"
+    />
+  </a>
+  <div>
+    <a href="https://luma.com/n9cw58h0"><img src="https://img.shields.io/badge/Register%20for%20the%20Event-C026D3?style=for-the-badge" alt="Register for the Event" /></a>
+  </div>
+</div>
+
 
 ## Table of Contents
 - [Getting Started](#getting-started)
