@@ -3,6 +3,7 @@ import { TelemetryPoint, fetchRecentTelemetry } from "./api";
 import { GlobeView } from "./GlobeView";
 import { TelemetryPanel } from "./TelemetryPanel";
 import { SimulationControls } from "./SimulationControls";
+import { ImageryPanel } from "./ImageryPanel";
 
 export const App: React.FC = () => {
   const [telemetry, setTelemetry] = useState<TelemetryPoint[]>([]);
@@ -46,6 +47,9 @@ export const App: React.FC = () => {
         <section className="side-panel">
           <TelemetryPanel latest={latest} />
           <SimulationControls />
+        </section>
+        <section className="imagery-section">
+          <ImageryPanel latest={latest} />
         </section>
       </main>
     </div>

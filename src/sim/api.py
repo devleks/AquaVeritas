@@ -1,12 +1,22 @@
 from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Literal, Optional
 import base64
 import json
+import traceback
 from datetime import datetime, timezone
 from ImagingProviders.sentinel_provider import SentinelProvider
 from ImagingProviders.mapbox_provider import MapboxlProvider
 
 api = FastAPI()
+
+api.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET"],
+    allow_headers=["*"],
+    expose_headers=["sentinel_metadata", "mapbox_metadata"],
+)
 
 sentinel = SentinelProvider()
 mapbox = MapboxlProvider()
@@ -75,20 +85,18 @@ async def get_sentinel_image(
     # if data is none return an error
     if data is None:
         raise HTTPException(status_code=500, detail="Error fetching satellite position from shared data - is the simulator running?")
-    #try:
-    sentinel_data = sentinel.get_single_image_lon_lat(
-        data[0],
-        data[1],
-        timestamp,
-        data_type=return_type,
-        spectral_bands=spectral_bands,
-        size_km=size_km,
-        window_seconds=window_seconds,
-    )
-    #except Exception as e:
-    #    error_details = traceback.format_exc()
-    #    raise HTTPException(status_code=500, detail="Error fetching Sentinel image: " + error_details)
-    #image = serialize_xarray_dataset(data["image"]) # this was used befor we returned a png
+    try:
+        sentinel_data = sentinel.get_single_image_lon_lat(
+            data[0],
+            data[1],
+            timestamp,
+            data_type=return_type,
+            spectral_bands=spectral_bands,
+            size_km=size_km,
+            window_seconds=window_seconds,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Error fetching Sentinel image: " + traceback.format_exc())
     image = sentinel_data["image"]
     metadata = sentinel_data["metadata"]
 
@@ -109,7 +117,7 @@ async def get_sentinel_image(
             ),
             "Access-Control-Expose-Headers": "sentinel_metadata",
         }
-        return Response(content=image.getvalue() if image is not None else "", media_type="image/png", headers=headers)
+        return Response(content=image.getvalue() if image is not None else b"", media_type="image/png", headers=headers)
     elif return_type == "array":
         image = serialize_xarray_dataset(image) if metadata["image_available"] and image is not None else None
         return {
@@ -187,20 +195,18 @@ async def get_sentinel_image_lon_lat(
     window_seconds: float = Query(default=10 * 24 * 60 * 60, gt=0),
     return_type: Literal["array", "png"] = "png"
 ):
-    #try:
-    sentinel_data = sentinel.get_single_image_lon_lat(
-        lon,
-        lat,
-        timestamp,
-        data_type=return_type,
-        spectral_bands=spectral_bands,
-        size_km=size_km,
-        window_seconds=window_seconds,
-    )
-    #except Exception as e:
-    #    error_details = traceback.format_exc()
-    #    raise HTTPException(status_code=500, detail="Error fetching Sentinel image: " + error_details)
-    #image = serialize_xarray_dataset(data["image"]) # this was used befor we returned a png
+    try:
+        sentinel_data = sentinel.get_single_image_lon_lat(
+            lon,
+            lat,
+            timestamp,
+            data_type=return_type,
+            spectral_bands=spectral_bands,
+            size_km=size_km,
+            window_seconds=window_seconds,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Error fetching Sentinel image: " + traceback.format_exc())
     image = sentinel_data["image"]
     metadata = sentinel_data["metadata"]
 
@@ -219,7 +225,7 @@ async def get_sentinel_image_lon_lat(
             ),
             "Access-Control-Expose-Headers": "sentinel_metadata",
         }
-        return Response(content=image.getvalue() if image is not None else "", media_type="image/png", headers=headers)
+        return Response(content=image.getvalue() if image is not None else b"", media_type="image/png", headers=headers)
     elif return_type == "array":
         image = serialize_xarray_dataset(image) if metadata["image_available"] and image is not None else None
         return {

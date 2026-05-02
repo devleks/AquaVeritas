@@ -34,4 +34,4 @@ WORKDIR /app/src/sim
 
 EXPOSE 8000
 
-CMD ["python", "main.py", "--timing", "25", "--time-step", "20"]
+CMD ["sh", "-c", "[ -z \"$MAPBOX_ACCESS_TOKEN\" ] && echo 'ERROR: MAPBOX_ACCESS_TOKEN is required' >&2 && exit 1; python main.py --timing 25 --time-step 20"]

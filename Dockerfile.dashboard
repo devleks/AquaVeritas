@@ -20,7 +20,8 @@ COPY src/dashboard/frontend/scripts ./scripts
 RUN npm run build
 
 # Python/Django stage
-FROM python:3.11-slim
+# FROM python:3.11-slim  -- previous setting
+FROM python:3.12-slim
 
 WORKDIR /app
 
@@ -34,8 +35,8 @@ COPY src/dashboard /app
 # Copy built frontend from builder stage
 COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
 
-# Create directory for database if it doesn't exist
-RUN mkdir -p /app
+# Create directory for database
+RUN mkdir -p /app/data
 
 # Collect static files (may fail if DB doesn't exist, that's ok)
 RUN python manage.py collectstatic --noinput || true
@@ -44,4 +45,4 @@ RUN python manage.py collectstatic --noinput || true
 EXPOSE 8000
 
 # Run migrations and start server
-CMD ["sh", "-c", "python manage.py migrate && python manage.py runserver 0.0.0.0:8000"]
+CMD ["sh", "-c", "export DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-$(python -c 'import secrets; print(secrets.token_urlsafe(50))')}; python manage.py migrate && python manage.py runserver 0.0.0.0:8000"]

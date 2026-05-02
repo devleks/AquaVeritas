@@ -10,12 +10,14 @@ class MapboxlProvider:
 
     def __init__(self):
         self.api_token = os.environ.get("MAPBOX_ACCESS_TOKEN")
-        if self.api_token is None:
-            raise ValueError("MAPBOX_ACCESS_TOKEN environment variable not set")
+        if not self.api_token:
+            print("WARNING: MAPBOX_ACCESS_TOKEN not set — Mapbox endpoints will return 503")
 
 
 
     def get_target_image(self, sat_lon, sat_lat, sat_alt, target_lon, target_lat):
+        if not self.api_token:
+            raise ValueError("MAPBOX_ACCESS_TOKEN is not set")
         print(f"get target input vars: sat_lon={sat_lon}, sat_lat={sat_lat}, sat_alt={sat_alt}, target_lon={target_lon}, target_lat={target_lat}")
         cartesian_sat = self._spherical_to_cartesian(sat_lon, sat_lat,  EARTH_RADIUS_KM + sat_alt)
         cartesian_target = self._spherical_to_cartesian(target_lon, target_lat, EARTH_RADIUS_KM)
@@ -74,9 +76,6 @@ class MapboxlProvider:
                 }
             }
         
-        # get image from mapbox
-        filename = "test.png"
-
         url = f"https://api.mapbox.com/styles/v1/mapbox/satellite-v9/static/{target_lon},{target_lat},{zoom_factor},{bearing},{pitch}/1280x1280@2x?access_token={self.api_token}"
         response = requests.get(url)
         metadata = {
