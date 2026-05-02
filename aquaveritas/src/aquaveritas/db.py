@@ -10,7 +10,7 @@ import psycopg2.extras
 
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
-    "postgresql://aqua:<redacted>@localhost:5432/aquaveritas",
+    "postgresql://aqua:<redacted>@localhost:5433/aquaveritas",
 )
 
 # ── Schema ─────────────────────────────────────────────────────────────────────

@@ -41,14 +41,14 @@ services:
     shm_size: '256mb'
 
   postgres:
-    image: postgis/postgis:15-3.3
+    image: postgis/postgis:16-3.4
     container_name: aquaveritas-postgres
     environment:
       POSTGRES_DB:       aquaveritas
       POSTGRES_USER:     aqua
       POSTGRES_PASSWORD: veritas
     ports:
-      - "5432:5432"
+      - "5433:5432"  # 5433 avoids conflict with local Homebrew postgres on 5432
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
