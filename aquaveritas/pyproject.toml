@@ -26,10 +26,3 @@ dependencies = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/aquaveritas"]
 
-[project.scripts]
-av-collect   = "aquaveritas.scripts.collect_data:main"
-av-label     = "aquaveritas.scripts.label_data:main"
-av-train     = "aquaveritas.scripts.train:main"
-av-finetune  = "aquaveritas.scripts.finetune:main"
-av-evaluate  = "aquaveritas.scripts.evaluate:main"
-av-predict   = "aquaveritas.scripts.predict:main"
