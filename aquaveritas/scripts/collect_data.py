@@ -67,9 +67,9 @@ def collect_one(
         lon=loc.lon, lat=loc.lat, timestamp=timestamp, location_id=loc.id
     )
 
-    # Determine quality flag
-    both_core_missing = not images.rgb_core.available and not images.swir_core.available
-    quality_limited   = both_core_missing
+    # With CORE_KM=15 the tile covers water + shoreline + agriculture — both
+    # rgb_core and swir_core are the 15km grid tiles used for all assessments.
+    quality_limited = not images.rgb_core.available and not images.swir_core.available
 
     # Save available images to disk
     ts_slug = timestamp[:10]  # YYYY-MM-DD
@@ -77,10 +77,8 @@ def collect_one(
     paths   = {}
 
     for name, result in [
-        ("rgb_core",    images.rgb_core),
-        ("swir_core",   images.swir_core),
-        ("rgb_buffer",  images.rgb_buffer),
-        ("swir_buffer", images.swir_buffer),
+        ("rgb_core",  images.rgb_core),
+        ("swir_core", images.swir_core),
     ]:
         if result.available and result.image:
             path = img_dir / f"{name}.png"
@@ -89,27 +87,28 @@ def collect_one(
         else:
             paths[f"{name}_path"] = None
 
-    # Extract footprints from metadata
-    core_fp   = images.rgb_core.metadata.get("footprint")    # [lon_min, lat_min, lon_max, lat_max]
-    buffer_fp = images.rgb_buffer.metadata.get("footprint")
+    core_fp = images.rgb_core.metadata.get("footprint")
 
     db.insert_observation(
         location_id           = location_id,
         observed_at           = timestamp,
-        sat_lon               = loc.lon,    # historical — use location coords
+        sat_lon               = loc.lon,
         sat_lat               = loc.lat,
         sat_alt_km            = 0.0,
         core_footprint        = core_fp,
-        buffer_footprint      = buffer_fp,
+        buffer_footprint      = None,
         image_quality_limited = quality_limited,
-        **paths,
+        rgb_core_path         = paths.get("rgb_core_path"),
+        swir_core_path        = paths.get("swir_core_path"),
+        rgb_buffer_path       = None,
+        swir_buffer_path      = None,
     )
 
     status = "ok"
     if quality_limited:
         status = "quality_limited"
     elif not images.rgb_core.available:
-        status = "partial (no core)"
+        status = "partial (no rgb)"
     return status
 
 

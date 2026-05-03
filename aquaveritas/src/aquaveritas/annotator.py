@@ -24,9 +24,13 @@ LOCATION CONTEXT:
 
 BASELINE: {expected_water_status}
 
-You will receive two images:
-1. RGB true-colour composite (red/green/blue bands, 5km tile)
-2. SWIR false-colour composite (swir16/nir/red bands, 5km tile)
+You will receive two images, each covering a 15km × 15km area organised as a \
+3×3 grid of 5km × 5km sub-tiles. The coordinate is positioned at the water/land \
+boundary so the tile captures open water, the shoreline transition, and the \
+adjacent land within a single view.
+
+1. RGB true-colour composite (red/green/blue bands, 15km tile)
+2. SWIR false-colour composite (swir16/nir/red bands, 15km tile)
    - Dark / black  = open water (SWIR strongly absorbed by water)
    - Bright green  = healthy, well-watered vegetation
    - Amber / yellow = moderate moisture stress
@@ -34,6 +38,7 @@ You will receive two images:
    - Deep red/brown = severely stressed or dead vegetation
    - White / pale   = cloud or salt flat
 
+Focus your assessment on the water body portion of the tile. \
 Analyse both images and respond with ONLY a valid JSON object — no prose, no markdown fences:
 {{
   "water_extent_status": "shrinking|stable|flooded|recovering|dry",
@@ -49,22 +54,26 @@ or if the image is clearly unusable.
 
 BUFFER_SYSTEM = """\
 You are an expert remote sensing analyst specialising in agricultural stress monitoring.
-You are analysing Sentinel-2 satellite imagery of the agricultural buffer zone \
-surrounding {name} (lat {lat}°, lon {lon}°).
+You are analysing Sentinel-2 satellite imagery of the land surrounding \
+{name} (lat {lat}°, lon {lon}°).
 
 LOCATION CONTEXT:
 {description}
 
-You will receive two images covering a 10km area centred on the water body:
-1. RGB true-colour composite (red/green/blue bands, 10km tile)
+You will receive two images, each covering a 15km × 15km area organised as a \
+3×3 grid of 5km × 5km sub-tiles. The coordinate is at the water/land boundary, \
+so the tile shows both the lake margin and the surrounding agricultural zone.
+
+1. RGB true-colour composite (red/green/blue bands, 15km tile)
    - Shows field patterns, roads, settlements, irrigation canals, land use change
-2. SWIR false-colour composite (swir16/nir/red bands, 10km tile)
+2. SWIR false-colour composite (swir16/nir/red bands, 15km tile)
    - Bright green  = healthy, well-watered crops or natural vegetation
    - Amber / yellow = moderate moisture stress in crops
    - Magenta / pink = bare soil, recently harvested, or dry fields
    - Deep red/brown = severe crop stress or crop failure
    - Dark / black   = open water, irrigation canals
 
+Focus your assessment on the agricultural land portion of the tile. \
 Analyse both images and respond with ONLY a valid JSON object — no prose, no markdown fences:
 {{
   "agriculture_present": true|false,

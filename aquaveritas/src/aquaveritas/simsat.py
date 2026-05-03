@@ -11,8 +11,8 @@ SIMSAT_URL = os.environ.get("SIMSAT_URL", "http://localhost:9005")
 DEFAULT_WINDOW_SECONDS = 2_592_000   # 30 days — maximises cloud-free hit rate
 RGB_BANDS   = ["red", "green", "blue"]
 SWIR_BANDS  = ["swir16", "nir", "red"]
-CORE_KM     = 5.0
-BUFFER_KM   = 10.0
+CORE_KM     = 15.0   # 15km tile = 3×3 grid of 5km sub-tiles; coord at shoreline
+BUFFER_KM   = 15.0   # same tile for agricultural assessment (coord is at transition)
 
 
 @dataclass
