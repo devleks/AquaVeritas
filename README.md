@@ -1,23 +1,31 @@
 # SimSat
-This tool simulates the accessibility of Earth imagery from a satellite. An orbit propagator calculates the satellite position over time and an API serves as an interface to on-board users, sharing the current position, timestamp and providing satellite imagery from that location. A web-based dashboard controls and visualizes the simulation.
 
-## Upcoming Hackathon: AI in Space | Liquid AI x DPhi Space
+SimSat simulates Earth imagery accessibility from a satellite. An orbit propagator calculates satellite position over time; an API exposes the current position, timestamp, and Sentinel-2 / Mapbox imagery for that location; a web dashboard controls and visualises the simulation.
 
-This is the official repository for the upcoming [AI in Space Hackathon](https://luma.com/n9cw58h0), organised in partnership between DPhi Space and Liquid AI.
+## AquaVeritas — Hackathon Submission
 
-This is a fully online event, open to builders from all around the globe.
+**AquaVeritas** is a freshwater monitoring system built on top of SimSat for the
+[Liquid AI x DPhi Space Hackathon: AI in Space (Hack #05)](https://luma.com/n9cw58h0).
+
+It uses a fine-tuned LFM2.5-VL-450M vision-language model to detect water body
+collapse, flood risk, agricultural encroachment, and settlement expansion across
+20 global sites from Sentinel-2 satellite imagery.
+
+| Resource | Link |
+|---|---|
+| Live demo (HF Space) | [Arty1001/aquaveritas](https://huggingface.co/spaces/Arty1001/aquaveritas) |
+| Model (GGUF) | [Arty1001/aquaveritas-lfm-GGUF](https://huggingface.co/Arty1001/aquaveritas-lfm-GGUF) |
+| Dataset | [devleks/aquaveritas-water-stress](https://huggingface.co/datasets/devleks/aquaveritas-water-stress) |
+| Setup guide | [SETUP.md](SETUP.md) |
 
 <div align="center">
   <a href="https://luma.com/n9cw58h0">
     <img
       src="banner.jpeg"
-      alt="SimSat"
+      alt="SimSat — AI in Space Hackathon"
       style="width: 70%; max-width: 70%; height: auto; display: inline-block; margin-bottom: 0.5em; margin-top: 0.5em;"
     />
   </a>
-  <div>
-    <a href="https://luma.com/n9cw58h0"><img src="https://img.shields.io/badge/Register%20for%20the%20Event-C026D3?style=for-the-badge" alt="Register for the Event" /></a>
-  </div>
 </div>
 
 

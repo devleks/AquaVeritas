@@ -1,19 +1,20 @@
 """
 AquaVeritas — HuggingFace Space
 ---------------------------------
-Three tabs:
-  1. Global Monitor  — interactive globe + per-location time series
-  2. Live Prediction — static sample card (inference runs locally, not on HF)
-  3. Dataset         — browse and filter the full observation history
+Two tabs:
+  Global Monitor  — world map + per-location time series + latest observation card
+  Dataset         — browse and filter the full observation history
 
 Data is served from a bundled SQLite file (data/observations.db).
-No PostgreSQL connection required.
+Live inference (LFM2.5-VL-450M + llama-server) runs locally — see SETUP.md.
 
 Run locally:
-    streamlit run app.py
+    streamlit run hf_space/app.py
 """
 
+import os
 import sys
+from html import escape as _html_escape
 from pathlib import Path
 
 import pandas as pd
@@ -21,21 +22,46 @@ import plotly.express as px
 import pydeck as pdk
 import streamlit as st
 
-# ── Path setup ────────────────────────────────────────────────────────────────
-# Allow importing locations from sibling src/ directory
 ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from aquaveritas.locations import LOCATIONS
+from aquaveritas.locations import LOCATIONS, LOCATIONS_BY_ID
 from db_lite import DatabaseLite
+
+# ── Mapbox — HF secret or env var, CartoDB fallback ──────────────────────────
+
+_MAPBOX_TOKEN = os.getenv("MAPBOX_TOKEN", "").strip()
+if _MAPBOX_TOKEN:
+    pdk.settings.mapbox_key = _MAPBOX_TOKEN
+
+MAP_STYLE = (
+    "mapbox://styles/mapbox/dark-v11"
+    if _MAPBOX_TOKEN
+    else "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json"
+)
 
 # ── Page config ───────────────────────────────────────────────────────────────
 
 st.set_page_config(
     page_title="AquaVeritas",
-    page_icon="💧",
+    page_icon=":satellite:",
     layout="wide",
 )
+
+# ── Design tokens ─────────────────────────────────────────────────────────────
+
+CLR_SURFACE  = "#ffffff08"
+CLR_BORDER   = "#ffffff10"
+CLR_TEXT_PRI = "#e8e8e8"
+CLR_TEXT_SEC = "#888888"
+
+CLR_RED    = "#DC3232"
+CLR_AMBER  = "#FF9800"
+CLR_YELLOW = "#F5C518"
+CLR_GREEN  = "#43A047"
+CLR_GREY   = "#9E9E9E"
+CLR_BLUE   = "#1E88E5"
+CLR_TEAL   = "#2EC4B6"
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -49,104 +75,29 @@ WATER_STATUS_COLOUR = {
 }
 
 STRESS_NUMERIC = {"none": 0, "low": 1, "moderate": 2, "severe": 3}
-
 LOCATION_NAMES = {loc.id: loc.name for loc in LOCATIONS}
 
-# CartoDB free tile layer — no Mapbox token needed
-MAP_STYLE = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json"
-
-# ── Data loading ──────────────────────────────────────────────────────────────
-
-@st.cache_data(ttl=300)
-def load_all_observations():
-    try:
-        db = DatabaseLite()
-        return db.get_observations_for_dashboard()
-    except Exception as exc:
-        st.error(f"Data error: {exc}")
-        return []
-
-
-@st.cache_data(ttl=300)
-def load_latest():
-    try:
-        db = DatabaseLite()
-        return db.get_latest_per_location()
-    except Exception as exc:
-        return []
-
-
-def to_df(rows: list[dict]) -> pd.DataFrame:
-    if not rows:
-        return pd.DataFrame()
-    df = pd.DataFrame(rows)
-    if "observed_at" in df.columns:
-        df["observed_at"] = pd.to_datetime(df["observed_at"], format="ISO8601", utc=True)
-    return df
-
-
-# ── Sample prediction for Live Prediction tab ─────────────────────────────────
-
-SAMPLE_PREDICTION = {
-    "location": "Lake Chad",
-    "observed_at": "2024-09-14 08:22 UTC",
-    "cloud_fraction": 0.12,
-    "core": {
-        "water_extent_status": "shrinking",
-        "flood_risk": "none",
-        "water_clarity": "turbid",
-        "shoreline_encroachment": True,
-        "image_quality_limited": False,
-    },
-    "buffer": {
-        "agriculture_present": True,
-        "crop_stress_level": "moderate",
-        "crop_stress_type": "drought",
-        "cultivation_expanding_toward_water": True,
-        "settlement_visible": True,
-        "bare_soil_expansion": True,
-    },
-    "prose_brief": (
-        "**Water Body Status:** The Lake Chad core zone shows continued surface area "
-        "reduction consistent with multi-year hydrological stress. Shoreline "
-        "encroachment is confirmed on the southwestern margin, with exposed lakebed "
-        "extending approximately 2-3km beyond the 2018 baseline shoreline. Water "
-        "clarity is classified as turbid, indicating elevated sediment load in the "
-        "remaining open water. Flood risk is assessed as none under current conditions."
-        "\n\n"
-        "**Buffer Zone Assessment:** The 30km agricultural buffer shows active "
-        "cultivation across approximately 60% of the visible area. Crop stress is "
-        "classified as moderate drought-type, with visible chlorophyll depletion "
-        "patterns in the northern field blocks. Cultivation is expanding toward the "
-        "receding waterline, with newly ploughed plots visible within 1km of the "
-        "current shore. Settlement density in the buffer is moderate, with visible "
-        "infrastructure along the eastern approach road."
-        "\n\n"
-        "**Risk Verdict:** ELEVATED. Converging signals — sustained surface area "
-        "reduction, active shoreline encroachment, agricultural expansion toward the "
-        "waterline, and moderate crop stress — indicate Lake Chad is tracking toward "
-        "a critical threshold. Immediate hydrological intervention or adaptive "
-        "agricultural policy adjustment is warranted. Next satellite pass recommended "
-        "within 14 days to confirm trajectory."
-    ),
+CORE_FIELDS = [
+    "water_extent_status", "flood_risk", "water_clarity", "shoreline_encroachment",
+]
+BUFFER_FIELDS = [
+    "agriculture_present", "crop_stress_level", "crop_stress_type",
+    "cultivation_expanding_toward_water", "settlement_visible", "bare_soil_expansion",
+]
+FIELD_LABELS = {
+    "water_extent_status":                "Water Extent Status",
+    "flood_risk":                         "Flood Risk",
+    "water_clarity":                      "Water Clarity",
+    "shoreline_encroachment":             "Shoreline Encroachment",
+    "agriculture_present":                "Agriculture Present",
+    "crop_stress_level":                  "Crop Stress Level",
+    "crop_stress_type":                   "Crop Stress Type",
+    "cultivation_expanding_toward_water": "Cultivation Expanding",
+    "settlement_visible":                 "Settlement Visible",
+    "bare_soil_expansion":                "Bare Soil Expansion",
 }
 
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _sustained_shrinkage(df: pd.DataFrame, threshold: int = 3) -> list[tuple]:
-    results = []
-    for loc_id in df["location_id"].unique():
-        sub = (
-            df[df["location_id"] == loc_id]
-            .sort_values("observed_at")["water_extent_status"]
-            .tolist()
-        )
-        max_run = _max_consecutive(sub, "shrinking")
-        if max_run >= threshold:
-            results.append((loc_id, max_run))
-    return sorted(results, key=lambda x: -x[1])
-
 
 def _max_consecutive(values: list, target: str) -> int:
     max_run = current = 0
@@ -159,321 +110,392 @@ def _max_consecutive(values: list, target: str) -> int:
     return max_run
 
 
-def _status_pill(value: str, colour_map: dict) -> str:
-    colour = colour_map.get(str(value).lower(), colour_map.get("unknown", [100, 100, 100, 180]))
-    r, g, b, _ = colour
+def _sustained_shrinkage(df: pd.DataFrame, threshold: int = 3) -> list[tuple]:
+    results = []
+    for loc_id in df["location_id"].unique():
+        sub = (
+            df[df["location_id"] == loc_id]
+            .sort_values("observed_at")["water_extent_status"]
+            .tolist()
+        )
+        run = _max_consecutive(sub, "shrinking")
+        if run >= threshold:
+            results.append((loc_id, run))
+    return sorted(results, key=lambda x: -x[1])
+
+
+def _colour_for(field: str, value) -> str:
+    if value is None:
+        return "#555555"
+    v = str(value).lower()
+    if field == "water_extent_status":
+        return {
+            "shrinking": CLR_RED, "stable": CLR_YELLOW,
+            "flooded": CLR_BLUE, "recovering": CLR_GREEN, "dry": CLR_GREY,
+        }.get(v, "#777")
+    if field == "flood_risk":
+        return {"active": CLR_RED, "elevated": CLR_AMBER, "none": CLR_GREEN}.get(v, "#777")
+    if field == "water_clarity":
+        return {"poor": CLR_RED, "moderate": CLR_AMBER, "good": CLR_GREEN}.get(v, "#777")
+    if field == "crop_stress_level":
+        return {
+            "severe": CLR_RED, "moderate": CLR_AMBER,
+            "low": CLR_YELLOW, "none": CLR_GREEN,
+        }.get(v, "#777")
+    if field in (
+        "shoreline_encroachment", "agriculture_present",
+        "cultivation_expanding_toward_water", "settlement_visible", "bare_soil_expansion",
+    ):
+        if isinstance(value, bool):
+            return CLR_RED if value else CLR_GREEN
+        return CLR_RED if v in ("true", "yes", "1") else CLR_GREEN
+    return CLR_TEAL
+
+
+def _badge(field: str, label: str, value) -> str:
+    colour  = _colour_for(field, value)
+    display = "—" if value is None else _html_escape(str(value))
     return (
-        f'<span style="background:rgba({r},{g},{b},0.25);'
-        f'color:rgb({r},{g},{b});border:1px solid rgba({r},{g},{b},0.5);'
-        f'border-radius:4px;padding:2px 8px;font-size:0.85em;">{value}</span>'
+        f'<div style="display:flex;align-items:center;gap:10px;'
+        f'background:{CLR_SURFACE};border:1px solid {CLR_BORDER};'
+        f'padding:8px 12px;border-radius:8px;margin-bottom:8px;">'
+        f'<span style="width:8px;height:8px;border-radius:50%;'
+        f'background:{colour};flex-shrink:0;"></span>'
+        f'<span style="flex:1;">'
+        f'<span style="display:block;color:{CLR_TEXT_SEC};font-size:0.72em;'
+        f'text-transform:uppercase;letter-spacing:0.06em;line-height:1.4;">{label}</span>'
+        f'<span style="color:{CLR_TEXT_PRI};font-size:0.97em;font-weight:500;">{display}</span>'
+        f'</span></div>'
     )
+
+
+# ── Data loading ──────────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=300)
+def load_all_observations() -> list[dict]:
+    try:
+        return DatabaseLite().get_observations_for_dashboard()
+    except Exception as exc:
+        st.error(f"Data error: {exc}")
+        return []
+
+
+@st.cache_data(ttl=300)
+def load_latest() -> list[dict]:
+    try:
+        return DatabaseLite().get_latest_per_location()
+    except Exception:
+        return []
+
+
+def to_df(rows: list[dict]) -> pd.DataFrame:
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    if "observed_at" in df.columns:
+        df["observed_at"] = pd.to_datetime(df["observed_at"], format="ISO8601", utc=True)
+    return df
 
 
 # ── Load data ─────────────────────────────────────────────────────────────────
 
-all_rows = load_all_observations()
-latest   = load_latest()
-all_df   = to_df(all_rows)
+all_rows  = load_all_observations()
+latest    = load_latest()
+all_df    = to_df(all_rows)
 latest_df = to_df(latest)
-has_data = not all_df.empty
+has_data  = not all_df.empty
 
 # ── Header ────────────────────────────────────────────────────────────────────
 
+st.title("AquaVeritas")
+st.caption(
+    "On-board satellite freshwater monitoring — "
+    "Fine-tuned LFM2.5-VL-450M · 20 global sites · "
+    "Liquid AI x DPhi Space Hackathon #05"
+)
 st.markdown(
-    "## 💧 AquaVeritas\n"
-    "On-board satellite freshwater monitoring · "
-    "Fine-tuned **LFM2.5-VL-450M** · "
-    "20 global sites · "
-    "[Model](https://huggingface.co/Arty1001/aquaveritas-lfm-GGUF) · "
-    "[Code](https://github.com/devleks/AquaVeritas)"
+    f'<p style="color:{CLR_TEXT_SEC};font-size:0.82em;margin:-4px 0 12px;">'
+    '<a href="https://huggingface.co/Arty1001/aquaveritas-lfm-GGUF" target="_blank">Model</a>'
+    " &nbsp;·&nbsp; "
+    '<a href="https://github.com/devleks/AquaVeritas" target="_blank">Code</a>'
+    " &nbsp;·&nbsp; "
+    '<a href="https://huggingface.co/datasets/Arty1001/aquaveritas-water-stress" target="_blank">Dataset</a>'
+    " &nbsp;·&nbsp; "
+    "Live inference runs locally — see "
+    '<a href="https://github.com/devleks/AquaVeritas/blob/main/SETUP.md" target="_blank">SETUP.md</a>'
+    "</p>",
+    unsafe_allow_html=True,
 )
 
-st.divider()
+# ── Sidebar ───────────────────────────────────────────────────────────────────
+
+with st.sidebar:
+    st.header("Controls")
+    _ALL = "__all__"
+    selected_id = st.selectbox(
+        "Water body",
+        options=[_ALL] + list(LOCATION_NAMES.keys()),
+        format_func=lambda x: "— All sites —" if x == _ALL else LOCATION_NAMES[x],
+        key="selected_id",
+    )
+    selected_loc = LOCATIONS_BY_ID.get(selected_id) if selected_id != _ALL else None
+    if selected_loc:
+        st.caption(f"{selected_loc.lat:.3f}°N, {selected_loc.lon:.3f}°E")
+    st.divider()
+    st.metric("Total observations",  len(all_df) if has_data else 0)
+    st.metric("Sites monitored", len(LOCATIONS))
+    st.divider()
+    st.caption(
+        "Live prediction (LFM2.5-VL-450M + llama-server) "
+        "runs on local hardware only. "
+        "This Space shows historical observations from the monitoring pipeline."
+    )
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
 
-tab_globe, tab_predict, tab_data = st.tabs(
-    ["Global Monitor", "Live Prediction", "Dataset"]
-)
+tab_monitor, tab_data = st.tabs(["Global Monitor", "Dataset"])
 
-# ════════════════════════════════════════════════════════════════════════════
-# TAB 1: Global Monitor
-# ════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
+# TAB 1 — Global Monitor
+# ═════════════════════════════════════════════════════════════════════════════
 
-with tab_globe:
+with tab_monitor:
+    col_map, col_legend = st.columns([3, 1])
 
-    # Sidebar-equivalent controls within the tab
-    col_controls, col_map = st.columns([1, 3])
+    with col_map:
+        st.subheader("Global Water Body Status")
 
-    with col_controls:
-        st.markdown("**Filter**")
-        selected_id = st.selectbox(
-            "Water body",
-            options=list(LOCATION_NAMES.keys()),
-            format_func=lambda x: LOCATION_NAMES[x],
-            label_visibility="collapsed",
+        view = pdk.ViewState(
+            latitude=selected_loc.lat if selected_loc else 10,
+            longitude=selected_loc.lon if selected_loc else 25,
+            zoom=5 if selected_loc else 1.8,
+            pitch=25,
+            bearing=0,
+            transition_duration=800,
         )
-        st.divider()
-        st.metric("Total observations", len(all_df) if has_data else 0)
-        st.metric("Sites monitored", len(LOCATIONS))
 
-        st.divider()
-        st.markdown("**Status legend**")
+        # All 20 locations merged with latest observations
+        all_locs_df = pd.DataFrame([
+            {"location_id": l.id, "name": l.name, "lat": l.lat, "lon": l.lon}
+            for l in LOCATIONS
+        ])
+        if not latest_df.empty:
+            loc_col = "location_name" if "location_name" in latest_df.columns else "name"
+            obs_slim = latest_df[
+                ["location_id", "water_extent_status", "flood_risk", "crop_stress_level"]
+            ].copy()
+            map_data = all_locs_df.merge(obs_slim, on="location_id", how="left")
+        else:
+            map_data = all_locs_df.copy()
+            map_data["water_extent_status"] = None
+            map_data["flood_risk"]          = None
+            map_data["crop_stress_level"]   = None
+
+        map_data["color"] = map_data["water_extent_status"].map(
+            lambda s: WATER_STATUS_COLOUR.get(str(s).lower(), WATER_STATUS_COLOUR["unknown"])
+            if pd.notna(s) else WATER_STATUS_COLOUR["unknown"]
+        )
+        map_data["color_halo"] = map_data["color"].map(
+            lambda c: [c[0] // 3, c[1] // 3, c[2] // 3, 50]
+        )
+        map_data["tooltip_text"] = (
+            map_data["name"]
+            + map_data["water_extent_status"].apply(
+                lambda s: f"\nStatus: {s}" if pd.notna(s) else "\nNo data yet"
+            )
+            + map_data["flood_risk"].apply(
+                lambda s: f"\nFlood risk: {s}" if pd.notna(s) else ""
+            )
+            + map_data["crop_stress_level"].apply(
+                lambda s: f"\nCrop stress: {s}" if pd.notna(s) else ""
+            )
+        )
+
+        layer_halo = pdk.Layer(
+            "ScatterplotLayer",
+            data=map_data,
+            get_position=["lon", "lat"],
+            get_fill_color="color_halo",
+            get_radius=18_000,
+            radius_min_pixels=10,
+            pickable=False,
+            stroked=False,
+        )
+        layer_dots = pdk.Layer(
+            "ScatterplotLayer",
+            data=map_data,
+            get_position=["lon", "lat"],
+            get_fill_color="color",
+            get_radius=8_000,
+            radius_min_pixels=5,
+            pickable=True,
+            stroked=True,
+            get_line_color=[255, 255, 255, 200],
+            line_width_min_pixels=1,
+        )
+        layer_text = pdk.Layer(
+            "TextLayer",
+            data=map_data,
+            get_position=["lon", "lat"],
+            get_text="name",
+            get_size=12,
+            get_color=[255, 255, 255, 200],
+            get_anchor="'middle'",
+            get_alignment_baseline="'top'",
+            get_pixel_offset=[0, 10],
+            billboard=True,
+        )
+
+        st.pydeck_chart(
+            pdk.Deck(
+                layers=[layer_halo, layer_dots, layer_text],
+                initial_view_state=view,
+                tooltip={"text": "{tooltip_text}"},
+                map_style=MAP_STYLE,
+            ),
+            use_container_width=True,
+            height=500,
+        )
+
+        if not has_data:
+            st.info("No observations in the bundled dataset. All 20 monitored sites are shown.")
+
+    with col_legend:
+        st.subheader("Legend")
         for status, colour in WATER_STATUS_COLOUR.items():
             if status == "unknown":
                 continue
             r, g, b, _ = colour
             st.markdown(
-                f'<span style="color:rgb({r},{g},{b})">⬤</span> {status.capitalize()}',
+                f'<span style="color:rgb({r},{g},{b})">&#9679;</span> {status.capitalize()}',
                 unsafe_allow_html=True,
             )
 
-        st.divider()
-        st.markdown("**Sustained shrinkage**")
-        st.caption("3+ consecutive shrinking observations")
-        if has_data:
-            shrink_locs = _sustained_shrinkage(all_df)
-            if shrink_locs:
-                for loc_id, count in shrink_locs:
-                    name = LOCATION_NAMES.get(loc_id, loc_id)
-                    st.warning(f"**{name}** — {count} consecutive")
-            else:
-                st.success("None detected")
-        else:
-            st.info("No data")
-
-    with col_map:
-        st.markdown("**Global Water Body Status**")
-
-        if not latest_df.empty:
-            map_data = latest_df.copy()
-            map_data["color"] = map_data["water_extent_status"].map(
-                lambda s: WATER_STATUS_COLOUR.get(
-                    str(s).lower(), WATER_STATUS_COLOUR["unknown"]
-                )
+    # Sustained shrinkage alerts
+    if has_data:
+        shrink_locs = _sustained_shrinkage(all_df)
+        if shrink_locs:
+            st.markdown(
+                f'<p style="color:{CLR_RED};font-size:0.78em;text-transform:uppercase;'
+                f'letter-spacing:0.08em;margin:16px 0 8px;font-weight:600;">Sustained shrinkage</p>',
+                unsafe_allow_html=True,
             )
-            map_data["tooltip"] = (
-                map_data["location_name"] + "\n"
-                + "Status: " + map_data["water_extent_status"].fillna("?") + "\n"
-                + "Crop stress: " + map_data["crop_stress_level"].fillna("?")
-            )
-            layer = pdk.Layer(
-                "ScatterplotLayer",
-                data=map_data,
-                get_position=["lon", "lat"],
-                get_fill_color="color",
-                get_radius=150_000,
-                pickable=True,
-                stroked=True,
-                get_line_color=[255, 255, 255, 80],
-                get_line_width=2,
-            )
-            view = pdk.ViewState(latitude=15, longitude=20, zoom=1.4, pitch=0)
-            st.pydeck_chart(
-                pdk.Deck(
-                    layers=[layer],
-                    initial_view_state=view,
-                    tooltip={"text": "{tooltip}"},
-                    map_style=MAP_STYLE,
-                )
-            )
-        else:
-            # No observations yet — show site markers without status
-            loc_df = pd.DataFrame(
-                [{"name": l.name, "lat": l.lat, "lon": l.lon} for l in LOCATIONS]
-            )
-            layer = pdk.Layer(
-                "ScatterplotLayer",
-                data=loc_df,
-                get_position=["lon", "lat"],
-                get_fill_color=[80, 140, 200, 160],
-                get_radius=150_000,
-                pickable=True,
-            )
-            view = pdk.ViewState(latitude=15, longitude=20, zoom=1.4)
-            st.pydeck_chart(
-                pdk.Deck(
-                    layers=[layer],
-                    initial_view_state=view,
-                    map_style=MAP_STYLE,
-                )
-            )
-            st.info(
-                "Observation data not yet loaded. "
-                "The globe shows all 20 monitored sites."
-            )
+            n_cols = min(len(shrink_locs), 5)
+            alert_cols = st.columns(n_cols)
+            for i, (loc_id, count) in enumerate(shrink_locs[:5]):
+                name = LOCATION_NAMES.get(loc_id, loc_id)
+                with alert_cols[i]:
+                    st.markdown(
+                        f'<div style="background:rgba(220,50,50,0.12);border:1px solid rgba(220,50,50,0.3);'
+                        f'border-radius:8px;padding:10px 12px;">'
+                        f'<div style="color:{CLR_RED};font-size:0.72em;text-transform:uppercase;'
+                        f'letter-spacing:0.06em;">{count} consecutive</div>'
+                        f'<div style="color:{CLR_TEXT_PRI};font-weight:600;margin-top:2px;">{_html_escape(name)}</div>'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
 
     # Per-location detail
     st.divider()
-    st.markdown(f"### {LOCATION_NAMES[selected_id]}")
 
-    loc_df = (
-        all_df[all_df["location_id"] == selected_id]
-        if has_data
-        else pd.DataFrame()
-    )
-
-    if loc_df.empty:
-        st.info(f"No observations recorded for {LOCATION_NAMES[selected_id]}.")
+    if not selected_loc:
+        st.info("Select a water body from the sidebar to view location detail.")
     else:
-        col_water, col_crop = st.columns(2)
+        st.subheader(LOCATION_NAMES[selected_id])
 
-        with col_water:
-            st.markdown("**Water extent status over time**")
-            water_order = ["flooded", "recovering", "stable", "shrinking", "dry"]
-            fig = px.scatter(
-                loc_df,
-                x="observed_at",
-                y="water_extent_status",
-                color="flood_risk",
-                color_discrete_map={
-                    "none": "#4CAF50",
-                    "elevated": "#FF9800",
-                    "active": "#F44336",
-                },
-                category_orders={"water_extent_status": water_order},
-                labels={"observed_at": "Date", "water_extent_status": "Status"},
-                height=280,
-            )
-            fig.update_traces(marker_size=9)
-            fig.update_layout(margin=dict(l=0, r=0, t=10, b=0), showlegend=True)
-            st.plotly_chart(fig, use_container_width=True)
+        loc_df = (
+            all_df[all_df["location_id"] == selected_id].copy()
+            if has_data else pd.DataFrame()
+        )
 
-        with col_crop:
-            st.markdown("**Crop stress level over time**")
-            loc_df["stress_num"] = loc_df["crop_stress_level"].map(STRESS_NUMERIC)
-            fig2 = px.scatter(
-                loc_df.dropna(subset=["stress_num"]),
-                x="observed_at",
-                y="stress_num",
-                color="crop_stress_type",
-                color_discrete_map={
-                    "drought": "#FF6B35",
-                    "flood_damage": "#4FC3F7",
-                    "none": "#81C784",
-                },
-                labels={"observed_at": "Date", "stress_num": "Stress level"},
-                height=280,
-            )
-            fig2.update_yaxes(
-                tickvals=[0, 1, 2, 3],
-                ticktext=["None", "Low", "Moderate", "Severe"],
-            )
-            fig2.update_traces(marker_size=9)
-            fig2.update_layout(margin=dict(l=0, r=0, t=10, b=0))
-            st.plotly_chart(fig2, use_container_width=True)
+        if loc_df.empty:
+            st.info(f"No observations recorded for {LOCATION_NAMES[selected_id]}.")
+        else:
+            col_water, col_crop = st.columns(2)
 
-        # Latest observation card
-        st.markdown("**Latest observation**")
-        latest_row = loc_df.sort_values("observed_at").iloc[-1]
-        c1, c2, c3 = st.columns(3)
+            with col_water:
+                st.markdown("**Water body status over time**")
+                water_order = ["flooded", "recovering", "stable", "shrinking", "dry"]
+                fig = px.scatter(
+                    loc_df, x="observed_at", y="water_extent_status",
+                    color="flood_risk",
+                    color_discrete_map={
+                        "none": "#4CAF50", "elevated": "#FF9800", "active": "#F44336"
+                    },
+                    category_orders={"water_extent_status": water_order},
+                    labels={"observed_at": "Date", "water_extent_status": "Status"},
+                    height=280,
+                )
+                fig.update_traces(marker_size=8)
+                fig.update_layout(margin=dict(l=0, r=0, t=10, b=0))
+                st.plotly_chart(fig, use_container_width=True)
 
-        with c1:
-            st.metric("Water status",  str(latest_row.get("water_extent_status", "—")))
-            st.metric("Flood risk",    str(latest_row.get("flood_risk", "—")))
-            st.metric("Water clarity", str(latest_row.get("water_clarity", "—")))
+            with col_crop:
+                st.markdown("**Crop stress level over time**")
+                loc_df["stress_num"] = loc_df["crop_stress_level"].map(STRESS_NUMERIC)
+                fig2 = px.scatter(
+                    loc_df.dropna(subset=["stress_num"]),
+                    x="observed_at", y="stress_num",
+                    color="crop_stress_type",
+                    color_discrete_map={
+                        "drought": "#FF6B35", "flood_damage": "#4FC3F7", "none": "#81C784"
+                    },
+                    labels={"observed_at": "Date", "stress_num": "Stress level"},
+                    height=280,
+                )
+                fig2.update_yaxes(
+                    tickvals=[0, 1, 2, 3],
+                    ticktext=["None", "Low", "Moderate", "Severe"],
+                )
+                fig2.update_traces(marker_size=8)
+                fig2.update_layout(margin=dict(l=0, r=0, t=10, b=0))
+                st.plotly_chart(fig2, use_container_width=True)
 
-        with c2:
-            st.metric("Crop stress", str(latest_row.get("crop_stress_level", "—")))
-            st.metric("Stress type", str(latest_row.get("crop_stress_type", "—")))
-            enc = "expanding" if latest_row.get("cultivation_expanding") else "stable"
-            st.metric("Cultivation", enc)
+            # Latest observation card with badges
+            st.markdown("**Latest observation**")
+            latest_row = loc_df.sort_values("observed_at").iloc[-1]
 
-        with c3:
             ts = latest_row.get("observed_at")
-            st.metric("Observed", str(ts)[:10] if ts else "—")
-            quality_ok = not latest_row.get("image_quality_limited", False)
-            st.metric("Image quality", "Good" if quality_ok else "Limited")
+            st.caption(f"Observed {str(ts)[:10] if ts else '—'}")
 
-        # Prose brief if available
-        prose = latest_row.get("prose_brief")
-        if prose and str(prose).strip() and str(prose) != "None":
-            st.divider()
-            st.markdown("**Analyst Brief** *(generated by Claude Haiku)*")
-            st.markdown(prose)
+            badge_core, badge_buf = st.columns(2)
+            with badge_core:
+                st.markdown("**Core zone**")
+                for fk in CORE_FIELDS:
+                    val = latest_row.get(fk)
+                    st.markdown(_badge(fk, FIELD_LABELS[fk], val), unsafe_allow_html=True)
+            with badge_buf:
+                st.markdown("**Buffer zone**")
+                for fk in BUFFER_FIELDS:
+                    val = latest_row.get(fk)
+                    if val is None:
+                        val = latest_row.get(
+                            "cultivation_expanding" if fk == "cultivation_expanding_toward_water" else fk
+                        )
+                    st.markdown(_badge(fk, FIELD_LABELS[fk], val), unsafe_allow_html=True)
 
-
-# ════════════════════════════════════════════════════════════════════════════
-# TAB 2: Live Prediction
-# ════════════════════════════════════════════════════════════════════════════
-
-with tab_predict:
-    st.markdown(
-        "### ⚡ Live Prediction\n\n"
-        "> **Note:** Live satellite inference requires running the fine-tuned "
-        "LFM2.5-VL-450M model locally (430MB GGUF + 180MB vision projector). "
-        "This is not feasible on HuggingFace Spaces free CPU tier. "
-        "The example below is a real prediction from the local pipeline — "
-        "the exact output format an analyst receives.\n\n"
-        "To run live predictions on your own hardware, "
-        "see the [setup guide](https://github.com/devleks/AquaVeritas#setup)."
-    )
-
-    st.divider()
-    st.markdown(f"#### Sample Prediction: {SAMPLE_PREDICTION['location']}")
-
-    meta_col, cloud_col = st.columns([3, 1])
-    with meta_col:
-        st.caption(f"Observed: {SAMPLE_PREDICTION['observed_at']}")
-    with cloud_col:
-        cloud_pct = int(SAMPLE_PREDICTION["cloud_fraction"] * 100)
-        st.caption(f"Cloud cover: {cloud_pct}% (clear)")
-
-    # Core zone
-    st.markdown("**Core zone (15km x 15km — water body)**")
-    core = SAMPLE_PREDICTION["core"]
-    cc1, cc2, cc3, cc4, cc5 = st.columns(5)
-    cc1.metric("Water status",   core["water_extent_status"])
-    cc2.metric("Flood risk",     core["flood_risk"])
-    cc3.metric("Clarity",        core["water_clarity"])
-    cc4.metric("Shore encroach", "Yes" if core["shoreline_encroachment"] else "No")
-    cc5.metric("Image quality",  "Good" if not core["image_quality_limited"] else "Limited")
-
-    # Buffer zone
-    st.markdown("**Buffer zone (30km x 30km — agricultural area)**")
-    buf = SAMPLE_PREDICTION["buffer"]
-    bc1, bc2, bc3, bc4, bc5, bc6 = st.columns(6)
-    bc1.metric("Agriculture",   "Present" if buf["agriculture_present"] else "Absent")
-    bc2.metric("Crop stress",   buf["crop_stress_level"])
-    bc3.metric("Stress type",   buf["crop_stress_type"])
-    bc4.metric("Cultivation",   "Expanding" if buf["cultivation_expanding_toward_water"] else "Stable")
-    bc5.metric("Settlement",    "Visible" if buf["settlement_visible"] else "None")
-    bc6.metric("Bare soil",     "Expanding" if buf["bare_soil_expansion"] else "Stable")
-
-    # Prose brief
-    st.divider()
-    st.markdown("**Analyst Brief** *(generated by Claude Haiku from structured JSON output)*")
-    st.markdown(SAMPLE_PREDICTION["prose_brief"])
-
-    st.divider()
-    st.markdown(
-        "##### How it works\n\n"
-        "1. **Satellite poll** — SimSat API checked every 30 seconds for proximity to monitored sites\n"
-        "2. **Image acquisition** — Four Sentinel-2 tiles fetched (RGB + SWIR, core + buffer zones)\n"
-        "3. **Cloud screening** — PIL-based cloud fraction estimator; tiles above 65% cloud are skipped\n"
-        "4. **VLM inference** — Fine-tuned LFM2.5-VL-450M runs two inference calls per observation "
-        "(core zone: 5 fields; buffer zone: 6 fields)\n"
-        "5. **Prose generation** — Claude Haiku converts the structured JSON into a three-paragraph "
-        "analyst-grade mission brief\n"
-        "6. **Storage** — All 11 fields stored in PostgreSQL + PostGIS with geospatial footprints"
-    )
+            prose = latest_row.get("prose_brief")
+            if prose and str(prose).strip() not in ("", "None"):
+                st.divider()
+                st.markdown("**Analyst Brief**")
+                st.markdown(prose)
 
 
-# ════════════════════════════════════════════════════════════════════════════
-# TAB 3: Dataset
-# ════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
+# TAB 2 — Dataset
+# ═════════════════════════════════════════════════════════════════════════════
 
 with tab_data:
-    st.markdown("### 📊 Observation Dataset")
+    st.subheader("Observation Dataset")
     st.caption(
         "All labeled observations from the AquaVeritas monitoring pipeline. "
-        "Full dataset: [devleks/aquaveritas-water-stress](https://huggingface.co/datasets/devleks/aquaveritas-water-stress)"
+        "Full dataset with training images: "
+        "[Arty1001/aquaveritas-water-stress](https://huggingface.co/datasets/Arty1001/aquaveritas-water-stress)"
     )
 
     if not has_data:
         st.info("No observations in the bundled dataset.")
     else:
-        # Filters
         f1, f2, f3 = st.columns(3)
         with f1:
             site_filter = st.multiselect(
@@ -508,39 +530,33 @@ with tab_data:
         st.markdown(f"**{len(filtered):,} observations**")
 
         display_cols = [
-            "observed_at", "location_name", "category",
-            "water_extent_status", "flood_risk", "water_clarity",
-            "crop_stress_level", "crop_stress_type",
-            "cultivation_expanding", "bare_soil_expansion",
-            "image_quality_limited",
+            c for c in [
+                "observed_at", "location_name", "category",
+                "water_extent_status", "flood_risk", "water_clarity",
+                "crop_stress_level", "crop_stress_type",
+                "cultivation_expanding", "bare_soil_expansion",
+                "image_quality_limited",
+            ] if c in filtered.columns
         ]
         st.dataframe(
             filtered[display_cols].sort_values("observed_at", ascending=False),
             use_container_width=True,
-            height=500,
+            height=480,
         )
 
-        # Status distribution chart
         st.divider()
         col_s1, col_s2 = st.columns(2)
+
         with col_s1:
             st.markdown("**Water status distribution**")
-            status_counts = (
-                filtered["water_extent_status"]
-                .value_counts()
-                .reset_index()
-            )
+            status_counts = filtered["water_extent_status"].value_counts().reset_index()
             fig_s = px.bar(
                 status_counts,
-                x="water_extent_status",
-                y="count",
+                x="water_extent_status", y="count",
                 color="water_extent_status",
                 color_discrete_map={
-                    "shrinking":  "#DC3232",
-                    "stable":     "#FAC832",
-                    "flooded":    "#1E64C8",
-                    "recovering": "#32B450",
-                    "dry":        "#A0A0A0",
+                    "shrinking": CLR_RED, "stable": CLR_YELLOW,
+                    "flooded": CLR_BLUE, "recovering": CLR_GREEN, "dry": CLR_GREY,
                 },
                 height=300,
                 labels={"water_extent_status": "Status", "count": "Count"},
@@ -557,10 +573,7 @@ with tab_data:
                 .sort_values("count", ascending=True)
             )
             fig_l = px.bar(
-                site_counts,
-                x="count",
-                y="location_name",
-                orientation="h",
+                site_counts, x="count", y="location_name", orientation="h",
                 height=300,
                 labels={"count": "Observations", "location_name": "Site"},
             )
