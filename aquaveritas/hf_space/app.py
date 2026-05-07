@@ -81,7 +81,7 @@ def to_df(rows: list[dict]) -> pd.DataFrame:
         return pd.DataFrame()
     df = pd.DataFrame(rows)
     if "observed_at" in df.columns:
-        df["observed_at"] = pd.to_datetime(df["observed_at"], utc=True)
+        df["observed_at"] = pd.to_datetime(df["observed_at"], format="ISO8601", utc=True)
     return df
 
 
