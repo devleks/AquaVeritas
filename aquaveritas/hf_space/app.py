@@ -193,7 +193,7 @@ st.divider()
 # ── Tabs ──────────────────────────────────────────────────────────────────────
 
 tab_globe, tab_predict, tab_data = st.tabs(
-    ["🌍 Global Monitor", "⚡ Live Prediction", "📊 Dataset"]
+    ["Global Monitor", "Live Prediction", "Dataset"]
 )
 
 # ════════════════════════════════════════════════════════════════════════════
