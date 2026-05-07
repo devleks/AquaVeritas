@@ -1,47 +1,76 @@
 """
 AquaVeritas Streamlit Dashboard
 ---------------------------------
-Three tabs:
-  1. Global Monitor  — interactive globe + per-location time series
-  2. Live Prediction — run a fresh inference against the current satellite pass
-  3. Dataset         — browse and filter the full observation history
+Four tabs:
+  Global Monitor  — world map + sustained-shrinkage alert panel
+  Location Detail — per-location time series + latest observation card
+  Model Evaluation — three-way accuracy comparison from comparison.json
+  Live Prediction  — fetch Sentinel-2 imagery and run on-board inference
 
 Run:
     streamlit run app/app.py
 """
 
+import json
+import os
 import sys
+import urllib.request
+from html import escape as _html_escape
 from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import pydeck as pdk
-import requests
 import streamlit as st
+from dotenv import load_dotenv
+
+# Load .env from project root (two levels up from app/)
+_ENV_PATH = Path(__file__).parent.parent / ".env"
+load_dotenv(_ENV_PATH)
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from aquaveritas.db import Database
 from aquaveritas.locations import LOCATIONS, LOCATIONS_BY_ID
-from aquaveritas.prose import (
-    CLOUD_FRACTION_BLOCK,
-    CLOUD_FRACTION_WARN,
-    estimate_cloud_fraction,
-    generate_prose,
-)
 
-# ── Config ────────────────────────────────────────────────────────────────────
+REPORTS_DIR = Path(__file__).parent.parent / "data" / "reports"
+
+# ── Mapbox token — st.secrets takes priority, .env as fallback ───────────────
+_MAPBOX_TOKEN = (
+    st.secrets.get("MAPBOX_TOKEN", "")
+    or os.getenv("MAPBOX_TOKEN", "")
+).strip()
+if _MAPBOX_TOKEN:
+    pdk.settings.mapbox_key = _MAPBOX_TOKEN
+    os.environ["MAPBOX_API_KEY"] = _MAPBOX_TOKEN   # pydeck env-var fallback
+
+# ── Page config ───────────────────────────────────────────────────────────────
 
 st.set_page_config(
     page_title="AquaVeritas",
-    page_icon="💧",
+    page_icon=":satellite:",
     layout="wide",
 )
 
-SIMSAT_BASE      = "http://localhost:9005"
-MODEL_URL        = "http://localhost:8080"
-CORE_KM          = 15
-BUFFER_KM        = 30
+# ── Design tokens ─────────────────────────────────────────────────────────────
+# Centralised so every colour reference traces back here.
+
+CLR_SURFACE   = "#ffffff08"
+CLR_BORDER    = "#ffffff10"
+CLR_TEXT_PRI  = "#e8e8e8"
+CLR_TEXT_SEC  = "#888888"
+
+CLR_RED    = "#DC3232"
+CLR_AMBER  = "#FF9800"
+CLR_YELLOW = "#F5C518"
+CLR_GREEN  = "#43A047"
+CLR_GREY   = "#9E9E9E"
+CLR_BLUE   = "#1E88E5"
+CLR_TEAL   = "#2EC4B6"
+CLR_ORACLE = "#5C85D6"
+
+# ── Constants ─────────────────────────────────────────────────────────────────
 
 WATER_STATUS_COLOUR = {
     "shrinking":  [220, 50,  50,  200],
@@ -53,62 +82,40 @@ WATER_STATUS_COLOUR = {
 }
 
 STRESS_NUMERIC = {"none": 0, "low": 1, "moderate": 2, "severe": 3}
-LOCATION_NAMES = {loc.id: loc.name for loc in LOCATIONS}
 
-try:
-    MAPBOX_TOKEN = st.secrets.get("MAPBOX_ACCESS_TOKEN", "")
-except Exception:
-    MAPBOX_TOKEN = ""
+CORE_FIELDS = [
+    "water_extent_status",
+    "flood_risk",
+    "water_clarity",
+    "shoreline_encroachment",
+]
+BUFFER_FIELDS = [
+    "agriculture_present",
+    "crop_stress_level",
+    "crop_stress_type",
+    "cultivation_expanding_toward_water",
+    "settlement_visible",
+    "bare_soil_expansion",
+]
+FIELD_LABELS = {
+    "water_extent_status":                "Water Extent Status",
+    "flood_risk":                         "Flood Risk",
+    "water_clarity":                      "Water Clarity",
+    "shoreline_encroachment":             "Shoreline Encroachment",
+    "agriculture_present":                "Agriculture Present",
+    "crop_stress_level":                  "Crop Stress Level",
+    "crop_stress_type":                   "Crop Stress Type",
+    "cultivation_expanding_toward_water": "Cultivation Expanding",
+    "settlement_visible":                 "Settlement Visible",
+    "bare_soil_expansion":                "Bare Soil Expansion",
+}
 
-MAP_STYLE = (
-    f"mapbox://styles/mapbox/dark-v10"
-    if MAPBOX_TOKEN
-    else "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json"
-)
-
-# ── Data loading ──────────────────────────────────────────────────────────────
-
-@st.cache_data(ttl=60)
-def load_all_observations():
-    try:
-        return Database().get_observations_for_dashboard()
-    except Exception as exc:
-        st.error(f"Database error: {exc}")
-        return []
-
-
-@st.cache_data(ttl=60)
-def load_latest():
-    try:
-        return Database().get_latest_per_location()
-    except Exception:
-        return []
-
-
-def to_df(rows: list[dict]) -> pd.DataFrame:
-    if not rows:
-        return pd.DataFrame()
-    df = pd.DataFrame(rows)
-    if "observed_at" in df.columns:
-        df["observed_at"] = pd.to_datetime(df["observed_at"], utc=True)
-    return df
-
+MAP_STYLE_DARK      = "mapbox://styles/mapbox/dark-v11"
+MAP_STYLE_SATELLITE = "mapbox://styles/mapbox/satellite-streets-v12"
+MAP_STYLE_FALLBACK  = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json"
+MAP_STYLE = MAP_STYLE_SATELLITE if _MAPBOX_TOKEN else MAP_STYLE_FALLBACK
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _sustained_shrinkage(df: pd.DataFrame, threshold: int = 3) -> list[tuple]:
-    results = []
-    for loc_id in df["location_id"].unique():
-        sub = (
-            df[df["location_id"] == loc_id]
-            .sort_values("observed_at")["water_extent_status"]
-            .tolist()
-        )
-        max_run = _max_consecutive(sub, "shrinking")
-        if max_run >= threshold:
-            results.append((loc_id, max_run))
-    return sorted(results, key=lambda x: -x[1])
-
 
 def _max_consecutive(values: list, target: str) -> int:
     max_run = current = 0
@@ -121,73 +128,130 @@ def _max_consecutive(values: list, target: str) -> int:
     return max_run
 
 
-def _fetch_simsat_image(lat: float, lon: float, km: int, band: str) -> bytes | None:
-    """Fetch a Sentinel-2 tile from SimSat API. Returns raw bytes or None."""
-    half = km / 2
-    deg  = half / 111.0
-    bbox = f"{lon - deg},{lat - deg},{lon + deg},{lat + deg}"
-    try:
-        r = requests.get(
-            f"{SIMSAT_BASE}/data/current/image/sentinel",
-            params={"bbox": bbox, "band": band, "width": 512, "height": 512},
-            timeout=30,
+def _sustained_shrinkage(df: pd.DataFrame, threshold: int = 3) -> list[tuple]:
+    results = []
+    for loc_id in df["location_id"].unique():
+        sub = (
+            df[df["location_id"] == loc_id]
+            .sort_values("observed_at")["water_extent_status"]
+            .tolist()
         )
-        if r.ok and r.content:
-            return r.content
-    except Exception:
-        pass
+        run = _max_consecutive(sub, "shrinking")
+        if run >= threshold:
+            results.append((loc_id, run))
+    return sorted(results, key=lambda x: -x[1])
+
+
+def _check_llama(url: str) -> bool:
     try:
-        r = requests.get(
-            f"{SIMSAT_BASE}/data/image/sentinel",
-            params={"bbox": bbox, "band": band, "width": 512, "height": 512},
-            timeout=30,
-        )
-        if r.ok and r.content:
-            return r.content
+        urllib.request.urlopen(f"{url}/health", timeout=3)
+        return True
     except Exception:
-        pass
-    return None
+        return False
 
 
-def _run_vlm(image_bytes_list: list[bytes], system_prompt: str) -> dict | None:
-    """Send images to llama-server and parse JSON response."""
-    import base64, json, re
+def _colour_for(field: str, value) -> str:
+    if value is None:
+        return "#555555"
+    v = str(value).lower()
+    if field == "water_extent_status":
+        return {
+            "shrinking": CLR_RED, "stable": CLR_YELLOW,
+            "flooded": CLR_BLUE, "recovering": CLR_GREEN, "dry": CLR_GREY,
+        }.get(v, "#777")
+    if field == "flood_risk":
+        return {"active": CLR_RED, "elevated": CLR_AMBER, "none": CLR_GREEN}.get(v, "#777")
+    if field == "water_clarity":
+        return {"poor": CLR_RED, "moderate": CLR_AMBER, "good": CLR_GREEN}.get(v, "#777")
+    if field == "crop_stress_level":
+        return {
+            "severe": CLR_RED, "moderate": CLR_AMBER,
+            "low": CLR_YELLOW, "none": CLR_GREEN,
+        }.get(v, "#777")
+    if field in (
+        "shoreline_encroachment", "agriculture_present",
+        "cultivation_expanding_toward_water", "settlement_visible", "bare_soil_expansion",
+    ):
+        if isinstance(value, bool):
+            return CLR_RED if value else CLR_GREEN
+        return CLR_RED if v in ("true", "yes", "1") else CLR_GREEN
+    return CLR_TEAL
 
-    images_payload = [
-        {
-            "type": "image_url",
-            "image_url": {"url": f"data:image/png;base64,{base64.b64encode(b).decode()}"},
-        }
-        for b in image_bytes_list
-        if b
-    ]
-    if not images_payload:
+
+def _badge(field: str, label: str, value) -> str:
+    """Render a coloured status badge. Model/user-derived values are HTML-escaped."""
+    colour  = _colour_for(field, value)
+    display = "—" if value is None else _html_escape(str(value))
+    return (
+        f'<div style="display:flex;align-items:center;gap:10px;'
+        f'background:{CLR_SURFACE};border:1px solid {CLR_BORDER};'
+        f'padding:8px 12px;border-radius:8px;margin-bottom:8px;">'
+        f'<span style="width:8px;height:8px;border-radius:50%;'
+        f'background:{colour};flex-shrink:0;"></span>'
+        f'<span style="flex:1;">'
+        f'<span style="display:block;color:{CLR_TEXT_SEC};font-size:0.72em;'
+        f'text-transform:uppercase;letter-spacing:0.06em;line-height:1.4;">{label}</span>'
+        f'<span style="color:{CLR_TEXT_PRI};font-size:0.97em;font-weight:500;">{display}</span>'
+        f'</span>'
+        f'</div>'
+    )
+
+
+def _unavailable_tile(label: str) -> str:
+    return (
+        f'<div style="background:{CLR_SURFACE};border:1px solid {CLR_BORDER};'
+        f'border-radius:8px;padding:24px 12px;text-align:center;'
+        f'color:{CLR_TEXT_SEC};font-size:0.8em;line-height:1.6;">'
+        f'{_html_escape(label)}<br>No tile available</div>'
+    )
+
+
+def _mapbox_satellite_url(lon: float, lat: float, zoom: int = 10) -> str:
+    return (
+        f"https://api.mapbox.com/styles/v1/mapbox/satellite-v9/static/"
+        f"{lon},{lat},{zoom}/600x340@2x"
+        f"?access_token={_MAPBOX_TOKEN}"
+    )
+
+
+# ── Data loaders ──────────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=60)
+def load_all_observations() -> list[dict]:
+    try:
+        return Database().get_observations_for_dashboard()
+    except Exception as exc:
+        st.error(f"Database error: {exc}")
+        return []
+
+
+@st.cache_data(ttl=60)
+def load_latest() -> list[dict]:
+    try:
+        rows = Database().get_latest_per_location()
+        for r in rows:
+            if "name" in r and "location_name" not in r:
+                r["location_name"] = r["name"]
+        return rows
+    except Exception:
+        return []
+
+
+@st.cache_data(ttl=300)
+def load_eval_metrics() -> dict | None:
+    path = REPORTS_DIR / "comparison.json"
+    if not path.exists():
         return None
+    return json.loads(path.read_text())
 
-    payload = {
-        "model": "aquaveritas",
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {
-                "role": "user",
-                "content": images_payload
-                + [{"type": "text", "text": "Analyse these satellite images and return the JSON assessment."}],
-            },
-        ],
-        "temperature": 0.1,
-        "max_tokens": 300,
-    }
 
-    try:
-        r = requests.post(f"{MODEL_URL}/v1/chat/completions", json=payload, timeout=60)
-        r.raise_for_status()
-        text = r.json()["choices"][0]["message"]["content"]
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if match:
-            return json.loads(match.group())
-    except Exception:
-        pass
-    return None
+def to_df(rows: list[dict]) -> pd.DataFrame:
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    if "observed_at" in df.columns:
+        df["observed_at"] = pd.to_datetime(df["observed_at"], utc=True)
+    return df
 
 
 # ── Load data ─────────────────────────────────────────────────────────────────
@@ -196,46 +260,164 @@ all_rows  = load_all_observations()
 latest    = load_latest()
 all_df    = to_df(all_rows)
 latest_df = to_df(latest)
+eval_data = load_eval_metrics()
 has_data  = not all_df.empty
+
+location_names = {loc.id: loc.name for loc in LOCATIONS}
 
 # ── Header ────────────────────────────────────────────────────────────────────
 
+st.title("AquaVeritas")
+st.caption("On-board satellite freshwater monitoring — Liquid AI × DPhi Space Hackathon")
 st.markdown(
-    "## AquaVeritas\n"
-    "On-board satellite freshwater monitoring · "
-    "Fine-tuned **LFM2.5-VL-450M** · 20 global sites"
+    f'<p style="color:{CLR_TEXT_SEC};font-size:0.82em;margin:-4px 0 12px;">'
+    "Global Monitor &nbsp;→&nbsp; Location Detail &nbsp;→&nbsp; "
+    "Model Evaluation &nbsp;→&nbsp; Live Prediction"
+    "</p>",
+    unsafe_allow_html=True,
 )
-st.divider()
+
+# ── Sidebar ───────────────────────────────────────────────────────────────────
+
+with st.sidebar:
+    st.header("Controls")
+    # Single source of truth — all tabs read from st.session_state["selected_id"]
+    _ALL = "__all__"
+    selected_id = st.selectbox(
+        "Water body",
+        options=[_ALL] + list(location_names.keys()),
+        format_func=lambda x: "— All sites —" if x == _ALL else location_names[x],
+        key="selected_id",
+    )
+    selected_loc = LOCATIONS_BY_ID.get(selected_id) if selected_id != _ALL else None
+    if selected_loc:
+        st.caption(f"{selected_loc.lat:.3f}°N, {selected_loc.lon:.3f}°E")
+    st.caption("Location selector controls all tabs")
+    st.divider()
+    st.metric("Total observations",  len(all_df) if has_data else 0)
+    st.metric("Locations monitored", len(LOCATIONS))
+    if eval_data:
+        ft = eval_data.get("finetuned", {}).get("metrics", {})
+        st.metric("Fine-tuned accuracy", f"{ft.get('overall', 0):.1%}")
+    st.divider()
+    if st.button("Refresh data"):
+        st.cache_data.clear()
+        st.rerun()
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
 
-tab_globe, tab_predict, tab_data = st.tabs(
-    ["Global Monitor", "Live Prediction", "Dataset"]
+tab_monitor, tab_location, tab_eval, tab_live = st.tabs(
+    ["Global Monitor", "Location Detail", "Model Evaluation", "Live Prediction"]
 )
 
-# ════════════════════════════════════════════════════════════════════════════
-# TAB 1: Global Monitor
-# ════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
+# TAB 1 — Global Monitor
+# ═════════════════════════════════════════════════════════════════════════════
 
-with tab_globe:
-    col_controls, col_map = st.columns([1, 3])
+with tab_monitor:
+    col_map, col_legend = st.columns([3, 1])
 
-    with col_controls:
-        st.markdown("**Select site**")
-        selected_id = st.selectbox(
-            "Water body",
-            options=list(LOCATION_NAMES.keys()),
-            format_func=lambda x: LOCATION_NAMES[x],
-            label_visibility="collapsed",
+    with col_map:
+        st.subheader("Global Water Body Status")
+
+        # View: global overview unless a specific site is selected
+        view = pdk.ViewState(
+            latitude=selected_loc.lat if selected_loc else 10,
+            longitude=selected_loc.lon if selected_loc else 25,
+            zoom=5 if selected_loc else 1.8,
+            pitch=25,
+            bearing=0,
+            transition_duration=800,
         )
-        if st.button("Refresh data"):
-            st.cache_data.clear()
-            st.rerun()
-        st.divider()
-        st.metric("Total observations", len(all_df) if has_data else 0)
-        st.metric("Sites monitored", len(LOCATIONS))
-        st.divider()
-        st.markdown("**Status legend**")
+
+        # Build map data from ALL 20 locations, merging in latest observations where available
+        all_locs_df = pd.DataFrame([
+            {"location_id": l.id, "name": l.name, "lat": l.lat, "lon": l.lon}
+            for l in LOCATIONS
+        ])
+        if not latest_df.empty:
+            loc_col = "location_name" if "location_name" in latest_df.columns else "name"
+            obs_slim = latest_df[["location_id", "water_extent_status", "flood_risk", "crop_stress_level"]].copy()
+            map_data = all_locs_df.merge(obs_slim, on="location_id", how="left")
+        else:
+            map_data = all_locs_df.copy()
+            map_data["water_extent_status"] = None
+            map_data["flood_risk"]          = None
+            map_data["crop_stress_level"]   = None
+
+        map_data["color"] = map_data["water_extent_status"].map(
+            lambda s: WATER_STATUS_COLOUR.get(str(s).lower(), WATER_STATUS_COLOUR["unknown"])
+            if pd.notna(s) else WATER_STATUS_COLOUR["unknown"]
+        )
+        map_data["color_halo"] = map_data["color"].map(
+            lambda c: [c[0] // 3, c[1] // 3, c[2] // 3, 50]
+        )
+        map_data["tooltip_text"] = (
+            map_data["name"]
+            + map_data["water_extent_status"].apply(
+                lambda s: f"\nStatus: {s}" if pd.notna(s) else "\nNo data yet"
+            )
+            + map_data["flood_risk"].apply(
+                lambda s: f"\nFlood risk: {s}" if pd.notna(s) else ""
+            )
+            + map_data["crop_stress_level"].apply(
+                lambda s: f"\nCrop stress: {s}" if pd.notna(s) else ""
+            )
+        )
+
+        layer_halo = pdk.Layer(
+            "ScatterplotLayer",
+            data=map_data,
+            get_position=["lon", "lat"],
+            get_fill_color="color_halo",
+            get_radius=18_000,
+            radius_min_pixels=10,
+            pickable=False,
+            stroked=False,
+        )
+        layer_dots = pdk.Layer(
+            "ScatterplotLayer",
+            data=map_data,
+            get_position=["lon", "lat"],
+            get_fill_color="color",
+            get_radius=8_000,
+            radius_min_pixels=5,
+            pickable=True,
+            stroked=True,
+            get_line_color=[255, 255, 255, 200],
+            line_width_min_pixels=1,
+        )
+        layer_text = pdk.Layer(
+            "TextLayer",
+            data=map_data,
+            get_position=["lon", "lat"],
+            get_text="name",
+            get_size=12,
+            get_color=[255, 255, 255, 200],
+            get_anchor="'middle'",
+            get_alignment_baseline="'top'",
+            get_pixel_offset=[0, 10],
+            billboard=True,
+        )
+        layers  = [layer_halo, layer_dots, layer_text]
+        tooltip = {"text": "{tooltip_text}"}
+
+        if not has_data:
+            st.info("No observations yet — run `scripts/predict.py` to populate the map.")
+
+        st.pydeck_chart(
+            pdk.Deck(
+                layers=layers,
+                initial_view_state=view,
+                tooltip=tooltip,
+                map_style=MAP_STYLE,
+            ),
+            use_container_width=True,
+            height=520,
+        )
+
+    with col_legend:
+        st.subheader("Legend")
         for status, colour in WATER_STATUS_COLOUR.items():
             if status == "unknown":
                 continue
@@ -244,88 +426,70 @@ with tab_globe:
                 f'<span style="color:rgb({r},{g},{b})">&#9679;</span> {status.capitalize()}',
                 unsafe_allow_html=True,
             )
-        st.divider()
-        st.markdown("**Sustained shrinkage**")
-        st.caption("3+ consecutive shrinking observations")
-        if has_data:
-            shrink_locs = _sustained_shrinkage(all_df)
-            if shrink_locs:
-                for loc_id, count in shrink_locs:
-                    name = LOCATION_NAMES.get(loc_id, loc_id)
-                    st.warning(f"**{name}** — {count} consecutive")
-            else:
-                st.success("None detected")
-        else:
-            st.info("No data yet")
 
-    with col_map:
-        st.markdown("**Global Water Body Status**")
-        if not latest_df.empty:
-            map_data = latest_df.copy()
-            map_data["color"] = map_data["water_extent_status"].map(
-                lambda s: WATER_STATUS_COLOUR.get(str(s).lower(), WATER_STATUS_COLOUR["unknown"])
+    # ── Sustained shrinkage — full-width below map ────────────────────────────
+    if has_data:
+        shrink_locs = _sustained_shrinkage(all_df)
+        if shrink_locs:
+            st.markdown(
+                f'<p style="color:{CLR_RED};font-size:0.78em;text-transform:uppercase;'
+                f'letter-spacing:0.08em;margin:16px 0 8px;font-weight:600;">Sustained shrinkage</p>',
+                unsafe_allow_html=True,
             )
-            map_data["tooltip"] = (
-                map_data["name"] + "\n"
-                + "Status: " + map_data["water_extent_status"].fillna("?") + "\n"
-                + "Crop stress: " + map_data["crop_stress_level"].fillna("?")
-            )
-            layer = pdk.Layer(
-                "ScatterplotLayer",
-                data=map_data,
-                get_position=["lon", "lat"],
-                get_fill_color="color",
-                get_radius=150_000,
-                pickable=True,
-                stroked=True,
-                get_line_color=[255, 255, 255, 80],
-                get_line_width=2,
-            )
-            view = pdk.ViewState(latitude=15, longitude=20, zoom=1.4, pitch=0)
-            st.pydeck_chart(
-                pdk.Deck(
-                    layers=[layer],
-                    initial_view_state=view,
-                    tooltip={"text": "{tooltip}"},
-                    map_style=MAP_STYLE,
-                )
-            )
-        else:
-            loc_df = pd.DataFrame([{"name": l.name, "lat": l.lat, "lon": l.lon} for l in LOCATIONS])
-            layer  = pdk.Layer(
-                "ScatterplotLayer",
-                data=loc_df,
-                get_position=["lon", "lat"],
-                get_fill_color=[80, 140, 200, 160],
-                get_radius=150_000,
-                pickable=True,
-            )
-            view = pdk.ViewState(latitude=15, longitude=20, zoom=1.4)
-            st.pydeck_chart(
-                pdk.Deck(layers=[layer], initial_view_state=view, map_style=MAP_STYLE)
-            )
-            st.info("No observations yet. Run `scripts/predict.py` to generate data.")
+            n_cols = min(len(shrink_locs), 5)
+            alert_cols = st.columns(n_cols)
+            for i, (loc_id, count) in enumerate(shrink_locs[:5]):
+                name = location_names.get(loc_id, loc_id)
+                with alert_cols[i]:
+                    st.markdown(
+                        f'<div style="background:{CLR_RED}18;border:1px solid {CLR_RED}55;'
+                        f'border-radius:8px;padding:10px 14px;">'
+                        f'<span style="color:{CLR_RED};font-size:0.7em;text-transform:uppercase;'
+                        f'letter-spacing:0.06em;">{count} consecutive</span><br>'
+                        f'<span style="color:{CLR_TEXT_PRI};font-weight:500;font-size:0.9em;">'
+                        f'{_html_escape(name)}</span>'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
 
-    # Per-location detail
-    st.divider()
-    st.markdown(f"### {LOCATION_NAMES[selected_id]}")
-    loc_df = all_df[all_df["location_id"] == selected_id] if has_data else pd.DataFrame()
+# ═════════════════════════════════════════════════════════════════════════════
+# TAB 2 — Location Detail
+# ═════════════════════════════════════════════════════════════════════════════
+
+with tab_location:
+    if not selected_loc:
+        st.info("Select a water body from the sidebar to view location detail.")
+        st.stop()
+
+    st.subheader(location_names[selected_id])
+
+    loc_df = (
+        all_df[all_df["location_id"] == selected_id].copy()
+        if has_data else pd.DataFrame()
+    )
 
     if loc_df.empty:
-        st.info(f"No observations recorded for {LOCATION_NAMES[selected_id]}.")
+        st.info(f"No observations yet for {location_names[selected_id]}.")
     else:
         col_water, col_crop = st.columns(2)
 
         with col_water:
-            st.markdown("**Water extent status over time**")
-            water_order = ["flooded", "recovering", "stable", "shrinking", "dry"]
+            st.markdown("**Water body status over time**")
             fig = px.scatter(
-                loc_df, x="observed_at", y="water_extent_status",
+                loc_df,
+                x="observed_at",
+                y="water_extent_status",
                 color="flood_risk",
-                color_discrete_map={"none": "#4CAF50", "elevated": "#FF9800", "active": "#F44336"},
-                category_orders={"water_extent_status": water_order},
+                color_discrete_map={
+                    "none":     "#4CAF50",
+                    "elevated": "#FF9800",
+                    "active":   "#F44336",
+                },
+                category_orders={
+                    "water_extent_status": ["flooded", "recovering", "stable", "shrinking", "dry"]
+                },
                 labels={"observed_at": "Date", "water_extent_status": "Status"},
-                height=280,
+                height=300,
             )
             fig.update_traces(marker_size=9)
             fig.update_layout(margin=dict(l=0, r=0, t=10, b=0))
@@ -336,274 +500,459 @@ with tab_globe:
             loc_df["stress_num"] = loc_df["crop_stress_level"].map(STRESS_NUMERIC)
             fig2 = px.scatter(
                 loc_df.dropna(subset=["stress_num"]),
-                x="observed_at", y="stress_num",
+                x="observed_at",
+                y="stress_num",
                 color="crop_stress_type",
-                color_discrete_map={"drought": "#FF6B35", "flood_damage": "#4FC3F7", "none": "#81C784"},
-                labels={"observed_at": "Date", "stress_num": "Stress level"},
-                height=280,
+                color_discrete_map={
+                    "drought":      "#FF6B35",
+                    "flood_damage": "#4FC3F7",
+                    "none":         "#81C784",
+                },
+                labels={"observed_at": "Date", "stress_num": "Stress Level"},
+                height=300,
             )
-            fig2.update_yaxes(tickvals=[0, 1, 2, 3], ticktext=["None", "Low", "Moderate", "Severe"])
+            fig2.update_yaxes(
+                tickvals=[0, 1, 2, 3],
+                ticktext=["None", "Low", "Moderate", "Severe"],
+            )
             fig2.update_traces(marker_size=9)
             fig2.update_layout(margin=dict(l=0, r=0, t=10, b=0))
             st.plotly_chart(fig2, use_container_width=True)
 
-        # Latest observation card
+        # ── Latest observation — badges match Tab 4 visual language ───────────
         st.markdown("**Latest observation**")
         latest_row = loc_df.sort_values("observed_at").iloc[-1]
-        c1, c2, c3 = st.columns(3)
+        ts = latest_row.get("observed_at")
+        st.caption(f"Observed {str(ts)[:10] if ts else '—'}")
 
-        with c1:
-            st.metric("Water status",  str(latest_row.get("water_extent_status", "—")))
-            st.metric("Flood risk",    str(latest_row.get("flood_risk", "—")))
-            st.metric("Water clarity", str(latest_row.get("water_clarity", "—")))
-        with c2:
-            st.metric("Crop stress", str(latest_row.get("crop_stress_level", "—")))
-            st.metric("Stress type", str(latest_row.get("crop_stress_type", "—")))
-            enc = "Expanding" if latest_row.get("cultivation_expanding") else "Stable"
-            st.metric("Cultivation", enc)
-        with c3:
-            ts = latest_row.get("observed_at")
-            st.metric("Observed", str(ts)[:10] if ts else "—")
-            quality_ok = not latest_row.get("image_quality_limited", False)
-            st.metric("Image quality", "Good" if quality_ok else "Limited")
+        obs_core_col, obs_buf_col, obs_img_col = st.columns([2, 2, 1])
 
-        img_path = latest_row.get("rgb_core_path")
-        if img_path and Path(img_path).exists():
-            st.image(img_path, caption="RGB core (15km)", use_column_width=True)
+        with obs_core_col:
+            st.markdown("**Core zone**")
+            for fk in CORE_FIELDS:
+                st.markdown(
+                    _badge(fk, FIELD_LABELS[fk], latest_row.get(fk)),
+                    unsafe_allow_html=True,
+                )
 
-        prose = latest_row.get("prose_brief")
-        if prose and str(prose).strip() and str(prose) != "None":
-            st.divider()
-            st.markdown("**Analyst Brief**")
-            st.markdown(prose)
+        with obs_buf_col:
+            st.markdown("**Buffer zone**")
+            for fk in BUFFER_FIELDS:
+                st.markdown(
+                    _badge(fk, FIELD_LABELS[fk], latest_row.get(fk)),
+                    unsafe_allow_html=True,
+                )
 
+        with obs_img_col:
+            img_path = latest_row.get("rgb_core_path")
+            if img_path and Path(img_path).exists():
+                st.image(img_path, caption="RGB core (15 km)", use_container_width=True)
+            else:
+                st.markdown(_unavailable_tile("RGB core"), unsafe_allow_html=True)
 
-# ════════════════════════════════════════════════════════════════════════════
-# TAB 2: Live Prediction
-# ════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
+# TAB 3 — Model Evaluation
+# ═════════════════════════════════════════════════════════════════════════════
 
-with tab_predict:
-    st.markdown("### Live Prediction")
+with tab_eval:
+    st.subheader("Model comparison — test set (n=30, all 10 fields)")
+
+    if eval_data is None:
+        st.warning(
+            "No `comparison.json` found. "
+            "Run `python scripts/compare_models.py --limit 30` first."
+        )
+    else:
+        claude_m    = eval_data.get("claude",    {}).get("metrics", {})
+        base_m      = eval_data.get("base",      {}).get("metrics", {})
+        finetuned_m = eval_data.get("finetuned", {}).get("metrics", {})
+
+        cf = claude_m.get("fields",    {})
+        bf = base_m.get("fields",      {})
+        ff = finetuned_m.get("fields", {})
+
+        base_ov = base_m.get("overall", 0)
+        ft_ov   = finetuned_m.get("overall", 0)
+
+        # ── Three headline metrics ────────────────────────────────────────────
+        k1, k2, k3 = st.columns(3)
+        with k1:
+            st.metric(
+                "Claude oracle",
+                f"{claude_m.get('overall', 0):.1%}",
+                f"n={claude_m.get('n', 0)}",
+            )
+        with k2:
+            st.metric(
+                "Base LFM2.5-VL-450M",
+                f"{base_ov:.1%}",
+                f"n={base_m.get('n', 0)}",
+            )
+        with k3:
+            st.metric(
+                "AquaVeritas fine-tuned",
+                f"{ft_ov:.1%}",
+                f"Δ {ft_ov - base_ov:+.1%} vs base",
+            )
+
+        st.divider()
+
+        # ── Model lift — one claim, one chart ─────────────────────────────────
+        st.markdown("**Model lift — fine-tuned vs base LFM**")
+        st.caption("Positive bars = accuracy gained by fine-tuning; sorted by impact.")
+
+        delta_rows = []
+        for fk in CORE_FIELDS + BUFFER_FIELDS:
+            bv = bf.get(fk, 0)
+            fv = ff.get(fk, 0)
+            delta_rows.append({
+                "Field":       FIELD_LABELS[fk],
+                "Zone":        "Core" if fk in CORE_FIELDS else "Buffer",
+                "Δ accuracy":  fv - bv,
+                "Base LFM":    bv,
+                "Fine-tuned":  fv,
+            })
+        delta_df = pd.DataFrame(delta_rows).sort_values("Δ accuracy", ascending=True)
+
+        fig_delta = px.bar(
+            delta_df,
+            x="Δ accuracy",
+            y="Field",
+            orientation="h",
+            color="Δ accuracy",
+            color_continuous_scale=[[0, CLR_RED], [0.5, "#444444"], [1, CLR_GREEN]],
+            color_continuous_midpoint=0,
+            hover_data={"Base LFM": ":.1%", "Fine-tuned": ":.1%", "Δ accuracy": "+.1%"},
+            labels={"Δ accuracy": "Accuracy lift vs base LFM", "Field": ""},
+            height=400,
+        )
+        fig_delta.update_xaxes(
+            tickformat="+.0%",
+            zeroline=True,
+            zerolinecolor="rgba(255,255,255,0.06)",
+            zerolinewidth=1,
+        )
+        fig_delta.update_coloraxes(showscale=False)
+        fig_delta.update_layout(
+            margin=dict(l=0, r=20, t=10, b=0),
+            yaxis=dict(tickfont=dict(size=11)),
+        )
+        st.plotly_chart(fig_delta, use_container_width=True)
+
+        st.divider()
+
+        # ── Fine-tuned vs Claude oracle — radar ───────────────────────────────
+        st.markdown("**Fine-tuned vs Claude oracle**")
+
+        labels  = [FIELD_LABELS[fk] for fk in CORE_FIELDS + BUFFER_FIELDS]
+        ft_vals = [ff.get(fk, 0) for fk in CORE_FIELDS + BUFFER_FIELDS]
+        cl_vals = [cf.get(fk, 0) for fk in CORE_FIELDS + BUFFER_FIELDS]
+
+        fig_r = go.Figure()
+        fig_r.add_trace(go.Scatterpolar(
+            r=cl_vals + [cl_vals[0]], theta=labels + [labels[0]],
+            fill="toself", name="Claude oracle",
+            line_color=CLR_ORACLE,
+            fillcolor="rgba(92,133,214,0.15)",
+        ))
+        fig_r.add_trace(go.Scatterpolar(
+            r=ft_vals + [ft_vals[0]], theta=labels + [labels[0]],
+            fill="toself", name="AquaVeritas fine-tuned",
+            line_color=CLR_TEAL,
+            fillcolor="rgba(46,196,182,0.15)",
+        ))
+        fig_r.update_layout(
+            polar=dict(radialaxis=dict(visible=True, range=[0, 1], tickformat=".0%")),
+            showlegend=True,
+            height=450,
+            margin=dict(l=60, r=60, t=30, b=30),
+        )
+        st.plotly_chart(fig_r, use_container_width=True)
+
+# ═════════════════════════════════════════════════════════════════════════════
+# TAB 4 — Live Prediction
+# ═════════════════════════════════════════════════════════════════════════════
+
+with tab_live:
+    st.subheader("Live satellite prediction")
     st.caption(
-        "Fetches current Sentinel-2 imagery from SimSat, runs the fine-tuned "
-        "LFM2.5-VL-450M model, and generates an analyst brief via Claude Haiku."
+        "Select a water body — the latest cloud-free Sentinel-2 imagery is fetched "
+        "automatically and the on-board model runs immediately."
     )
 
-    lp_col1, lp_col2 = st.columns([2, 1])
-    with lp_col1:
-        predict_loc_id = st.selectbox(
-            "Select water body",
-            options=list(LOCATION_NAMES.keys()),
-            format_func=lambda x: LOCATION_NAMES[x],
-            key="predict_loc",
-        )
-    with lp_col2:
-        st.markdown("")
-        run_btn = st.button("Run Prediction", type="primary", use_container_width=True)
+    llama_url = os.getenv("LLAMA_SERVER_URL", "http://localhost:8080")
+    server_ok = _check_llama(llama_url)
 
-    if run_btn:
-        loc = LOCATIONS_BY_ID[predict_loc_id]
-        st.markdown(f"**{loc.name}** — {loc.lat:.3f}N, {loc.lon:.3f}E")
-
-        with st.spinner("Fetching Sentinel-2 imagery..."):
-            rgb_core   = _fetch_simsat_image(loc.lat, loc.lon, CORE_KM,   "rgb")
-            swir_core  = _fetch_simsat_image(loc.lat, loc.lon, CORE_KM,   "swir")
-            rgb_buf    = _fetch_simsat_image(loc.lat, loc.lon, BUFFER_KM,  "rgb")
-            swir_buf   = _fetch_simsat_image(loc.lat, loc.lon, BUFFER_KM,  "swir")
-
-        # Display tiles
-        img_cols = st.columns(4)
-        labels = ["Core RGB", "Core SWIR", "Buffer RGB", "Buffer SWIR"]
-        tiles  = [rgb_core, swir_core, rgb_buf, swir_buf]
-        for col, label, tile in zip(img_cols, labels, tiles):
-            with col:
-                if tile:
-                    st.image(tile, caption=label, use_column_width=True)
-                else:
-                    st.warning(f"{label}: unavailable")
-
-        # Cloud screening
-        cloud_core = estimate_cloud_fraction(rgb_core) if rgb_core else 1.0
-        cloud_buf  = estimate_cloud_fraction(rgb_buf)  if rgb_buf  else 1.0
-        cloud_frac = max(cloud_core, cloud_buf)
-        cloud_pct  = int(cloud_frac * 100)
-
-        if cloud_frac >= CLOUD_FRACTION_BLOCK:
-            st.error(f"Cloud cover {cloud_pct}% — imagery too degraded for reliable classification. Observation skipped.")
-            st.stop()
-        elif cloud_frac >= CLOUD_FRACTION_WARN:
-            st.warning(f"Cloud cover {cloud_pct}% — classification is low-confidence. Assessment suppressed.")
-            cloud_degraded = True
+    stat_col, simsat_col = st.columns(2)
+    with stat_col:
+        if server_ok:
+            st.success(f"Model server ready — {llama_url}")
         else:
-            st.success(f"Cloud cover {cloud_pct}% — clear for inference.")
+            st.error(
+                f"Model server not reachable at **{llama_url}**\n\n"
+                "```\nllama-server \\\n"
+                "  -m data/models/aquaveritas-lfm-q8_0.gguf \\\n"
+                "  --mmproj data/models/mmproj-LFM2.5-VL-450m-F16.gguf \\\n"
+                "  --port 8080 --ctx-size 8192 -ngl 99\n```"
+            )
+    with simsat_col:
+        try:
+            from aquaveritas.simsat import SimSatClient as _SC
+            _pos = _SC().get_current_position()
+            _lon, _lat, _alt = _pos["lon-lat-alt"]
+            st.info(f"SimSat — ({_lon:.1f}°, {_lat:.1f}°) at {_alt:.0f} km")
+        except Exception:
+            st.warning("SimSat not reachable")
+
+    st.divider()
+
+    # ── Synced location — sidebar selectbox (key="selected_id") owns the state ─
+    if not selected_loc:
+        st.info("Select a water body from the sidebar to run a live prediction.")
+        st.stop()
+    live_loc_id = selected_id
+    live_loc    = selected_loc
+
+    info_col, map_col = st.columns([1, 2])
+
+    with info_col:
+        # Show which location is active — sidebar is the single control
+        st.markdown(f"### {location_names[live_loc_id]}")
+        st.caption("← Change water body in the sidebar to switch location")
+
+        if live_loc:
+            st.markdown(
+                f"**{live_loc.lat:.3f}°N, {live_loc.lon:.3f}°E**  \n"
+                f"{live_loc.description}  \n"
+                f"Expected: {live_loc.expected_water_status}"
+            )
+
+        st.divider()
+        fetch_btn = st.button(
+            "Fetch latest imagery & predict",
+            type="primary",
+            disabled=not server_ok,
+            use_container_width=True,
+            help="Fetches the best cloud-free Sentinel-2 tile within a 30-day window",
+        )
+
+    with map_col:
+        if live_loc and _MAPBOX_TOKEN:
+            st.image(
+                _mapbox_satellite_url(live_loc.lon, live_loc.lat),
+                caption=f"{location_names[live_loc_id]} — satellite view",
+                use_container_width=True,
+            )
+        elif live_loc:
+            st.info("Add MAPBOX_TOKEN to .env for satellite context view")
+
+    if fetch_btn and live_loc:
+        from datetime import datetime, timezone
+        from aquaveritas.simsat import SimSatClient, RGB_BANDS, SWIR_BANDS, CORE_KM, BUFFER_KM
+        from aquaveritas.evaluator import LlamaBackend
+
+        timestamp = datetime.now(timezone.utc).isoformat()
+        client    = SimSatClient()
+        backend   = LlamaBackend(base_url=llama_url, timeout=120.0)
+
+        prog = st.progress(0, text="Fetching Sentinel-2 imagery…")
+
+        with st.spinner("Running inference pipeline…"):
+            prog.progress(10, text="RGB core — fetching…")
+            rgb_core = client.fetch_sentinel(
+                live_loc.lon, live_loc.lat, timestamp, RGB_BANDS, CORE_KM)
+
+            prog.progress(30, text="SWIR core — fetching…")
+            swir_core = client.fetch_sentinel(
+                live_loc.lon, live_loc.lat, timestamp, SWIR_BANDS, CORE_KM)
+
+            prog.progress(50, text="RGB buffer — fetching…")
+            rgb_buf = client.fetch_sentinel(
+                live_loc.lon, live_loc.lat, timestamp, RGB_BANDS, BUFFER_KM)
+
+            prog.progress(70, text="SWIR buffer — fetching…")
+            swir_buf = client.fetch_sentinel(
+                live_loc.lon, live_loc.lat, timestamp, SWIR_BANDS, BUFFER_KM)
+
+            # ── Cloud screening ───────────────────────────────────────────────
+            from aquaveritas.prose import (
+                estimate_cloud_fraction, CLOUD_FRACTION_WARN, CLOUD_FRACTION_BLOCK
+            )
+            cloud_core = estimate_cloud_fraction(rgb_core.image) if rgb_core.available else 1.0
+            cloud_buf  = estimate_cloud_fraction(rgb_buf.image)  if rgb_buf.available  else 1.0
+            cloud_frac = max(cloud_core, cloud_buf)
+            cloud_pct  = int(cloud_frac * 100)
             cloud_degraded = False
 
-        # VLM inference
-        from aquaveritas.annotator import CORE_SYSTEM, BUFFER_SYSTEM
+            if cloud_frac >= CLOUD_FRACTION_BLOCK:
+                prog.progress(100, text="Imagery too degraded")
+                st.error(
+                    f"Cloud cover {cloud_pct}% — imagery too degraded for reliable "
+                    "classification. Observation skipped."
+                )
+                st.stop()
+            elif cloud_frac >= CLOUD_FRACTION_WARN:
+                st.warning(f"Cloud cover {cloud_pct}% — low-confidence imagery. Assessment line suppressed.")
+                cloud_degraded = True
+            else:
+                st.success(f"Cloud cover {cloud_pct}% — clear for inference.")
 
-        core_system = CORE_SYSTEM.format(
-            name=loc.name, lat=loc.lat, lon=loc.lon,
-            description=loc.description,
-            expected_water_status=loc.expected_water_status,
-        )
-        buf_system = BUFFER_SYSTEM.format(
-            name=loc.name, lat=loc.lat, lon=loc.lon,
-            description=loc.description,
-        )
+            prog.progress(80, text="Core zone — running inference…")
+            core_result = None
+            if rgb_core.available and swir_core.available:
+                try:
+                    core_result = backend.infer_core(
+                        rgb_core.image, swir_core.image, live_loc)
+                except Exception as exc:
+                    st.error(f"Core inference error: {exc}")
 
-        with st.spinner("Running VLM inference..."):
-            core_result   = _run_vlm([rgb_core, swir_core], core_system)   if rgb_core  else None
-            buffer_result = _run_vlm([rgb_buf,  swir_buf],  buf_system)    if rgb_buf   else None
+            prog.progress(92, text="Buffer zone — running inference…")
+            buffer_result = None
+            if rgb_buf.available and swir_buf.available:
+                try:
+                    buffer_result = backend.infer_buffer(
+                        rgb_buf.image, swir_buf.image, live_loc)
+                except Exception as exc:
+                    st.error(f"Buffer inference error: {exc}")
 
-        if core_result is None and buffer_result is None:
-            st.error("Inference failed — is llama-server running on port 8080?")
-            st.stop()
+            prog.progress(100, text="Predictions ready")
 
-        # Structured fields
+        st.session_state["live_result"] = {
+            "loc_id":          live_loc_id,
+            "timestamp":       timestamp,
+            "rgb_core":        rgb_core,
+            "swir_core":       swir_core,
+            "rgb_buf":         rgb_buf,
+            "swir_buf":        swir_buf,
+            "core_result":     core_result,
+            "buffer_result":   buffer_result,
+            "cloud_degraded":  cloud_degraded,
+        }
+
+    res = st.session_state.get("live_result")
+    if res and res["loc_id"] == live_loc_id:
         st.divider()
-        st.markdown("**Core zone (15km x 15km — water body)**")
-        if core_result:
-            cc = st.columns(5)
-            cc[0].metric("Water status",   str(core_result.get("water_extent_status", "—")))
-            cc[1].metric("Flood risk",     str(core_result.get("flood_risk", "—")))
-            cc[2].metric("Clarity",        str(core_result.get("water_clarity", "—")))
-            cc[3].metric("Shore encroach", "Yes" if core_result.get("shoreline_encroachment") else "No")
-            cc[4].metric("Image quality",  "Limited" if core_result.get("image_quality_limited") else "Good")
-        else:
-            st.info("Core zone inference unavailable.")
 
-        st.markdown("**Buffer zone (30km x 30km — agricultural area)**")
-        if buffer_result:
-            bc = st.columns(6)
-            bc[0].metric("Agriculture",  "Present" if buffer_result.get("agriculture_present") else "Absent")
-            bc[1].metric("Crop stress",  str(buffer_result.get("crop_stress_level", "—")))
-            bc[2].metric("Stress type",  str(buffer_result.get("crop_stress_type", "—")))
-            bc[3].metric("Cultivation",  "Expanding" if buffer_result.get("cultivation_expanding_toward_water") else "Stable")
-            bc[4].metric("Settlement",   "Visible" if buffer_result.get("settlement_visible") else "None")
-            bc[5].metric("Bare soil",    "Expanding" if buffer_result.get("bare_soil_expansion") else "Stable")
-        else:
-            st.info("Buffer zone inference unavailable.")
+        acq_date = (
+            res["rgb_core"].metadata.get("date")
+            or res["rgb_core"].metadata.get("acquisition_date")
+            or res["timestamp"][:10]
+        )
+        import time as _time
+        _fetched_at = res["timestamp"][:16]
+        st.markdown(
+            f"**{location_names[live_loc_id]}** — "
+            f"Sentinel-2 acquisition `{acq_date}` · "
+            f"Fetched `{_fetched_at} UTC`"
+        )
 
-        # Prose brief
-        st.divider()
-        with st.spinner("Generating analyst brief..."):
-            from datetime import datetime, timezone
-            date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            prose = generate_prose(
-                location=loc.name,
-                date=date_str,
-                core=core_result,
-                buffer=buffer_result,
-                cloud_degraded=cloud_degraded,
-            )
-
-        st.markdown("**Analyst Brief**")
-        st.markdown(prose)
-
-
-# ════════════════════════════════════════════════════════════════════════════
-# TAB 3: Dataset
-# ════════════════════════════════════════════════════════════════════════════
-
-with tab_data:
-    st.markdown("### Dataset")
-    st.caption("All labeled observations from the AquaVeritas monitoring pipeline.")
-
-    if not has_data:
-        st.info("No observations in the database.")
-    else:
-        f1, f2, f3 = st.columns(3)
-        with f1:
-            site_filter = st.multiselect(
-                "Site",
-                options=sorted(all_df["location_name"].unique()),
-                default=[],
-                placeholder="All sites",
-            )
-        with f2:
-            status_filter = st.multiselect(
-                "Water status",
-                options=sorted(all_df["water_extent_status"].dropna().unique()),
-                default=[],
-                placeholder="All statuses",
-            )
-        with f3:
-            stress_filter = st.multiselect(
-                "Crop stress",
-                options=sorted(all_df["crop_stress_level"].dropna().unique()),
-                default=[],
-                placeholder="All levels",
-            )
-
-        filtered = all_df.copy()
-        if site_filter:
-            filtered = filtered[filtered["location_name"].isin(site_filter)]
-        if status_filter:
-            filtered = filtered[filtered["water_extent_status"].isin(status_filter)]
-        if stress_filter:
-            filtered = filtered[filtered["crop_stress_level"].isin(stress_filter)]
-
-        st.markdown(f"**{len(filtered):,} observations**")
-
-        display_cols = [
-            "observed_at", "location_name", "category",
-            "water_extent_status", "flood_risk", "water_clarity",
-            "crop_stress_level", "crop_stress_type",
-            "cultivation_expanding", "bare_soil_expansion",
-            "image_quality_limited",
+        img_cols = st.columns(4)
+        pairs = [
+            ("RGB core",    res["rgb_core"]),
+            ("SWIR core",   res["swir_core"]),
+            ("RGB buffer",  res["rgb_buf"]),
+            ("SWIR buffer", res["swir_buf"]),
         ]
-        st.dataframe(
-            filtered[display_cols].sort_values("observed_at", ascending=False),
-            use_container_width=True,
-            height=500,
-        )
+        for col, (label, result) in zip(img_cols, pairs):
+            with col:
+                if result.available and result.image:
+                    st.image(result.image, caption=label, use_container_width=True)
+                else:
+                    st.markdown(_unavailable_tile(label), unsafe_allow_html=True)
 
         st.divider()
-        col_s1, col_s2 = st.columns(2)
+        pred_core_col, pred_buf_col = st.columns(2)
 
-        with col_s1:
-            st.markdown("**Water status distribution**")
-            status_counts = (
-                filtered["water_extent_status"]
-                .value_counts()
-                .reset_index()
-            )
-            fig_s = px.bar(
-                status_counts,
-                x="water_extent_status", y="count",
-                color="water_extent_status",
-                color_discrete_map={
-                    "shrinking": "#DC3232", "stable": "#FAC832",
-                    "flooded": "#1E64C8", "recovering": "#32B450", "dry": "#A0A0A0",
-                },
-                height=300,
-                labels={"water_extent_status": "Status", "count": "Count"},
-            )
-            fig_s.update_layout(showlegend=False, margin=dict(l=0, r=0, t=10, b=0))
-            st.plotly_chart(fig_s, use_container_width=True)
+        with pred_core_col:
+            st.markdown("**Core zone — water body**")
+            if res["core_result"]:
+                for fk in CORE_FIELDS:
+                    st.markdown(
+                        _badge(fk, FIELD_LABELS[fk], res["core_result"].get(fk)),
+                        unsafe_allow_html=True,
+                    )
+            elif not res["rgb_core"].available:
+                st.warning("No cloud-free tile available for this location")
+            else:
+                st.error("Core inference returned no result")
 
-        with col_s2:
-            st.markdown("**Observations per site**")
-            site_counts = (
-                filtered.groupby("location_name")
-                .size()
-                .reset_index(name="count")
-                .sort_values("count", ascending=True)
-            )
-            fig_l = px.bar(
-                site_counts, x="count", y="location_name", orientation="h",
-                height=300,
-                labels={"count": "Observations", "location_name": "Site"},
-            )
-            fig_l.update_layout(margin=dict(l=0, r=0, t=10, b=0))
-            st.plotly_chart(fig_l, use_container_width=True)
+        with pred_buf_col:
+            st.markdown("**Buffer zone — agriculture**")
+            if res["buffer_result"]:
+                for fk in BUFFER_FIELDS:
+                    st.markdown(
+                        _badge(fk, FIELD_LABELS[fk], res["buffer_result"].get(fk)),
+                        unsafe_allow_html=True,
+                    )
+            elif not res["rgb_buf"].available:
+                st.warning("No buffer tile available")
+            else:
+                st.error("Buffer inference returned no result")
 
+        with st.expander("Raw model output"):
+            st.json({"core": res["core_result"], "buffer": res["buffer_result"]})
+
+        # ── Analyst prose brief ───────────────────────────────────────────────
+        if res["core_result"] or res["buffer_result"]:
+            st.divider()
+            with st.spinner("Generating analyst brief…"):
+                from aquaveritas.prose import generate_prose
+                prose = generate_prose(
+                    location=location_names[live_loc_id],
+                    date=acq_date,
+                    core=res["core_result"],
+                    buffer=res["buffer_result"],
+                    cloud_degraded=res.get("cloud_degraded", False),
+                )
+            if prose and str(prose).strip() not in ("", "None"):
+                st.markdown("**Analyst Brief**")
+                st.markdown(prose)
+
+        st.divider()
+        if st.button("Save observation to database", key="save_live"):
+            try:
+                db = Database()
+                img_dir = (
+                    Path(__file__).parent.parent / "data" / "images"
+                    / live_loc_id / res["timestamp"][:16].replace(":", "-")
+                )
+                img_dir.mkdir(parents=True, exist_ok=True)
+
+                paths = {}
+                for path_key, result in [
+                    ("rgb_core_path",    res["rgb_core"]),
+                    ("swir_core_path",   res["swir_core"]),
+                    ("rgb_buffer_path",  res["rgb_buf"]),
+                    ("swir_buffer_path", res["swir_buf"]),
+                ]:
+                    if result.available and result.image:
+                        dest = img_dir / f"{path_key.replace('_path', '')}.png"
+                        dest.write_bytes(result.image)
+                        paths[path_key] = str(dest)
+                    else:
+                        paths[path_key] = None
+
+                obs_id = db.insert_observation(
+                    location_id=live_loc_id,
+                    observed_at=res["timestamp"],
+                    sat_lon=live_loc.lon,
+                    sat_lat=live_loc.lat,
+                    sat_alt_km=0.0,
+                    core_footprint=None,
+                    buffer_footprint=None,
+                    image_quality_limited=False,
+                    **paths,
+                )
+                if obs_id != -1:
+                    db.apply_labels(obs_id, res["core_result"], res["buffer_result"])
+                    st.success(f"Saved as observation #{obs_id} — visible in Global Monitor")
+                    st.cache_data.clear()
+                else:
+                    st.warning("An observation already exists for this timestamp")
+            except Exception as exc:
+                st.error(f"Save failed: {exc}")
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 
 st.divider()
-st.caption(
-    "AquaVeritas · Fine-tuned LFM2.5-VL-450M via SimSat + Sentinel-2 · "
-    "Accuracy: 38% (base) → 84% (fine-tuned) · "
-    "Liquid AI x DPhi Space Hackathon #05"
-)
+st.caption("AquaVeritas · LFM2.5-VL-450M · SimSat + Sentinel-2 · Hack #05: AI in Space")
