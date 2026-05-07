@@ -266,7 +266,7 @@ with tab_globe:
                 lambda s: WATER_STATUS_COLOUR.get(str(s).lower(), WATER_STATUS_COLOUR["unknown"])
             )
             map_data["tooltip"] = (
-                map_data["location_name"] + "\n"
+                map_data["name"] + "\n"
                 + "Status: " + map_data["water_extent_status"].fillna("?") + "\n"
                 + "Crop stress: " + map_data["crop_stress_level"].fillna("?")
             )
