@@ -529,7 +529,6 @@ with tab_data:
                 filtered["water_extent_status"]
                 .value_counts()
                 .reset_index()
-                .rename(columns={"index": "status", "water_extent_status": "count"})
             )
             fig_s = px.bar(
                 status_counts,
