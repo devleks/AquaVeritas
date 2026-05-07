@@ -28,16 +28,18 @@ sys.path.insert(0, str(ROOT / "src"))
 from aquaveritas.locations import LOCATIONS, LOCATIONS_BY_ID
 from db_lite import DatabaseLite
 
-# ── Mapbox — HF secret or env var, CartoDB fallback ──────────────────────────
+# ── Mapbox — HF secret injected as MAPBOX_TOKEN env var ──────────────────────
+# pydeck reads MAPBOX_API_KEY natively; set both so tile rendering works.
 
 _MAPBOX_TOKEN = os.getenv("MAPBOX_TOKEN", "").strip()
 if _MAPBOX_TOKEN:
+    os.environ["MAPBOX_API_KEY"] = _MAPBOX_TOKEN
     pdk.settings.mapbox_key = _MAPBOX_TOKEN
 
 MAP_STYLE = (
-    "mapbox://styles/mapbox/dark-v11"
+    "mapbox://styles/mapbox/light-v11"
     if _MAPBOX_TOKEN
-    else "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json"
+    else "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json"
 )
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -266,10 +268,10 @@ with tab_monitor:
         st.subheader("Global Water Body Status")
 
         view = pdk.ViewState(
-            latitude=selected_loc.lat if selected_loc else 10,
-            longitude=selected_loc.lon if selected_loc else 25,
-            zoom=5 if selected_loc else 1.8,
-            pitch=25,
+            latitude=selected_loc.lat if selected_loc else 15,
+            longitude=selected_loc.lon if selected_loc else 30,
+            zoom=6 if selected_loc else 1.9,
+            pitch=0,
             bearing=0,
             transition_duration=800,
         )
@@ -296,7 +298,7 @@ with tab_monitor:
             if pd.notna(s) else WATER_STATUS_COLOUR["unknown"]
         )
         map_data["color_halo"] = map_data["color"].map(
-            lambda c: [c[0] // 3, c[1] // 3, c[2] // 3, 50]
+            lambda c: [c[0], c[1], c[2], 40]
         )
         map_data["tooltip_text"] = (
             map_data["name"]
@@ -317,7 +319,8 @@ with tab_monitor:
             get_position=["lon", "lat"],
             get_fill_color="color_halo",
             get_radius=18_000,
-            radius_min_pixels=10,
+            radius_min_pixels=9,
+            radius_max_pixels=22,
             pickable=False,
             stroked=False,
         )
@@ -328,9 +331,10 @@ with tab_monitor:
             get_fill_color="color",
             get_radius=8_000,
             radius_min_pixels=5,
+            radius_max_pixels=11,
             pickable=True,
             stroked=True,
-            get_line_color=[255, 255, 255, 200],
+            get_line_color=[255, 255, 255, 240],
             line_width_min_pixels=1,
         )
         layer_text = pdk.Layer(
@@ -338,11 +342,11 @@ with tab_monitor:
             data=map_data,
             get_position=["lon", "lat"],
             get_text="name",
-            get_size=12,
-            get_color=[255, 255, 255, 200],
+            get_size=13,
+            get_color=[20, 20, 20, 230],
             get_anchor="'middle'",
             get_alignment_baseline="'top'",
-            get_pixel_offset=[0, 10],
+            get_pixel_offset=[0, 12],
             billboard=True,
         )
 
