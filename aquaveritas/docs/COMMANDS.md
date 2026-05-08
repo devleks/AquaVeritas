@@ -924,8 +924,16 @@ Status will move from `Uploading` → `Processing` → `Completed` (or `Processi
 ### Download the completed bundle
 ```bash
 cd /Users/ml_labs/leap-finetune
-uv run leap-bundle download <bundle-id> --output /Users/ml_labs/claudey/SimSat/aquaveritas/data/models/
+uv run leap-bundle download 2 --output-path /Users/ml_labs/claudey/SimSat/aquaveritas/data/models/leap-bundle
 ```
+**Note:** The flag is `--output-path`, not `--output`. The LEAP platform produces a **single GGUF** (`LFM2_VL-450M-Q8_0.gguf`, 430MB) packaged for the LEAP Edge SDK. This is the fine-tuned backbone only — the mmproj is handled separately by the SDK. For local inference via `llama-server`, continue using the two-file setup in `data/models/` (`aquaveritas-lfm-q8_0.gguf` + `mmproj-LFM2.5-VL-450m-F16.gguf`).
+
+**Downloaded artefact:**
+```
+data/models/leap-bundle/LFM2_VL-450M-Q8_0.gguf    430MB   fine-tuned backbone (LEAP Edge SDK format)
+```
+
+**LEAP Edge SDK deployment docs:** https://docs.liquid.ai/leap
 
 ### Resume a failed upload (network interruption)
 ```bash
@@ -2003,5 +2011,5 @@ print(json.dumps(result, indent=2))
 | `leap-bundle validate <dir>` | Validate model dir before upload | seconds |
 | `leap-bundle cancel <id>` | Cancel a failed/stale bundle | seconds |
 | `leap-bundle create <dir> --quantization Q8_0 --mmproj-quantization f16` | Submit bundle to LEAP platform | ~5–15 min |
-| `leap-bundle download <id> --output <dir>` | Download completed bundle | variable |
+| `leap-bundle download <id> --output-path <dir>` | Download completed bundle | variable |
 | `leap-bundle resume <id>` | Resume interrupted upload | variable |
