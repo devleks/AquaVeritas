@@ -50,20 +50,88 @@ st.set_page_config(
     layout="wide",
 )
 
-# ── Design tokens ─────────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Nunito+Sans:opsz,wght@6..12,400;6..12,500;6..12,600;6..12,700&family=Source+Code+Pro&display=swap');
 
-CLR_SURFACE  = "#ffffff08"
-CLR_BORDER   = "#ffffff10"
-CLR_TEXT_PRI = "#e8e8e8"
-CLR_TEXT_SEC = "#888888"
+html, body, [class*="css"], .stMarkdown, .stText, button, input, select {
+    font-family: 'Nunito Sans', sans-serif !important;
+}
 
-CLR_RED    = "#DC3232"
-CLR_AMBER  = "#FF9800"
+[data-testid="stSidebar"] {
+    background-color: #032D60 !important;
+    border-right: 1px solid #021E42;
+}
+[data-testid="stSidebar"] * { color: #FFFFFF !important; }
+[data-testid="stSidebar"] .stSelectbox > label,
+[data-testid="stSidebar"] p { color: rgba(255,255,255,0.72) !important; }
+[data-testid="stSidebar"] [data-baseweb="select"] > div {
+    background: rgba(255,255,255,0.10) !important;
+    border-color: rgba(255,255,255,0.25) !important;
+}
+
+.stTabs [data-baseweb="tab-list"] { gap: 0; border-bottom: 2px solid #D8DDE6; }
+.stTabs [data-baseweb="tab"] {
+    font-weight: 600; font-size: 0.875rem; color: #706E6B;
+    padding: 0.625rem 1.25rem;
+    border-bottom: 2px solid transparent; margin-bottom: -2px;
+    background: transparent !important;
+}
+.stTabs [aria-selected="true"] {
+    color: #00A1E0 !important; border-bottom-color: #00A1E0 !important;
+}
+
+.stButton > button {
+    font-family: 'Nunito Sans', sans-serif !important;
+    font-weight: 600;
+    background-color: #00A1E0 !important; color: #FFFFFF !important;
+    border: none !important; border-radius: 4px !important;
+    transition: background-color 0.15s ease;
+}
+.stButton > button:hover { background-color: #0088C7 !important; }
+
+[data-testid="metric-container"] label {
+    font-size: 0.7rem; text-transform: uppercase;
+    letter-spacing: 0.07em; color: #706E6B !important; font-weight: 600;
+}
+[data-testid="stMetricValue"] { color: #032D60 !important; font-weight: 700 !important; }
+
+h1, h2, h3, h4 {
+    font-family: 'Nunito Sans', sans-serif !important;
+    color: #032D60 !important; font-weight: 700 !important;
+}
+
+[data-testid="stDataFrame"] th {
+    background: #F4F6F9 !important; color: #032D60 !important;
+    font-weight: 700 !important; font-size: 0.78rem;
+    text-transform: uppercase; letter-spacing: 0.06em;
+}
+
+[data-baseweb="select"] > div, [data-baseweb="input"] > div {
+    border-color: #D8DDE6 !important; border-radius: 4px !important;
+}
+[data-baseweb="select"] > div:focus-within,
+[data-baseweb="input"] > div:focus-within {
+    border-color: #00A1E0 !important;
+    box-shadow: 0 0 0 2px rgba(0,161,224,0.2) !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# ── Design tokens — Cloud Tower design system ─────────────────────────────────
+
+CLR_SURFACE  = "#FFFFFF"
+CLR_BORDER   = "#D8DDE6"
+CLR_TEXT_PRI = "#032D60"
+CLR_TEXT_SEC = "#706E6B"
+
+CLR_RED    = "#C23934"
+CLR_AMBER  = "#FF9A3C"
 CLR_YELLOW = "#F5C518"
-CLR_GREEN  = "#43A047"
-CLR_GREY   = "#9E9E9E"
-CLR_BLUE   = "#1E88E5"
-CLR_TEAL   = "#2EC4B6"
+CLR_GREEN  = "#04844B"
+CLR_GREY   = "#706E6B"
+CLR_BLUE   = "#00A1E0"
+CLR_TEAL   = "#00A1E0"
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
