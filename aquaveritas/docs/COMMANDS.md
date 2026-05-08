@@ -436,8 +436,8 @@ llama-server \
     --mmproj ./outputs/mmproj-aquaveritas-lfm-Q8_0.gguf \
     --host 0.0.0.0 \
     --port 8080 \
-    --ctx-size 4096 \
-    --n-gpu-layers 35
+    --ctx-size 8192 \
+    -ngl 99
 ```
 **Purpose:** Starts an OpenAI-compatible inference server. `LlamaBackend` in
 `evaluator.py` connects to `http://localhost:8080/v1` by default and sends requests
@@ -603,10 +603,11 @@ echo "Predict loop restarted (PID $!)"
 ```bash
 streamlit run app/app.py
 ```
-**Purpose:** Opens a web UI at `http://localhost:8501` with three tabs:
-- **Global Monitor** — pydeck globe of all 20 water bodies, colour-coded by latest status, zoom-to-selected, trend charts
-- **Live Prediction** — select water body → fetch Sentinel-2 imagery → run VLM inference → display structured result + prose brief
-- **Dataset** — browse historical observations with location/date filters  
+**Purpose:** Opens a web UI at `http://localhost:8501` with four tabs:
+- **Global Monitor** — pydeck globe of all 20 water bodies, colour-coded by latest status, zoom-to-selected, sustained shrinkage alerts, time-series trend charts
+- **Live Prediction** — select water body → fetch Sentinel-2 imagery → run VLM inference → display 11-field structured result + Claude Haiku prose brief
+- **Model Evaluation** — three-way accuracy table (oracle vs base vs fine-tuned), per-field and per-location breakdown
+- **Dataset** — browse and filter all historical observations with location/date/status filters  
 **Sample output:**
 ```
   You can now view your Streamlit app in your browser.
@@ -621,7 +622,38 @@ streamlit run app/app.py --server.port 8501
 
 ---
 
-## 8b. Prose Generation
+## 8b. HuggingFace Space
+
+### Push the HF Space (export SQLite snapshot + upload)
+```bash
+bash scripts/push_hf_space.sh
+```
+**Purpose:** Exports the current PostgreSQL observations to a SQLite bundle
+(`hf_space/data/observations.db`), then uploads the full `hf_space/` directory
+to `Arty1001/aquaveritas` on HuggingFace Spaces.
+
+### Upload manually via Python API (if CLI not in PATH)
+```bash
+python3 -c "
+from huggingface_hub import HfApi
+api = HfApi()
+api.upload_folder(
+    folder_path='hf_space/',
+    repo_id='Arty1001/aquaveritas',
+    repo_type='space',
+)
+print('Done')
+"
+```
+
+### Check Space is live
+```bash
+curl -s https://huggingface.co/spaces/Arty1001/aquaveritas | grep -i "running\|error" | head -5
+```
+
+---
+
+## 8c. Prose Generation
 
 The dashboard generates human-readable mission-brief prose from structured VLM predictions
 using Claude Haiku (`claude-haiku-4-5`). Requires `ANTHROPIC_API_KEY` in `.env`.
@@ -703,6 +735,202 @@ llama-server -m data/models/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf \
 
 # Run prose test suite
 python scripts/test_prose_qwen.py
+```
+
+---
+
+## 8d. Modal Volume Inspection
+
+### List all Modal apps (check for running jobs)
+```bash
+modal app list
+```
+
+### List Modal volumes
+```bash
+modal volume list
+```
+
+### Browse volume root
+```bash
+modal volume ls aquaveritas-data
+```
+
+### Browse subdirectories
+```bash
+modal volume ls aquaveritas-data gguf
+modal volume ls aquaveritas-data aquaveritas-bundle
+```
+
+### List Modal environments
+```bash
+modal environment list
+```
+
+### Download a file from the volume
+```bash
+modal volume get aquaveritas-data gguf/aquaveritas-lfm-q8_0.gguf ./data/models/
+```
+
+---
+
+## 8e. GitHub PR — Hackathon Submission
+
+### View the submission PR
+```bash
+gh pr view 5 --repo DPhi-Space/SimSat
+```
+
+### Update the PR body
+```bash
+gh pr edit 5 --repo DPhi-Space/SimSat --body "$(cat <<'EOF'
+...body content...
+EOF
+)"
+```
+
+### Create submission branch from upstream main
+```bash
+git remote add upstream https://github.com/DPhi-Space/SimSat.git
+git fetch upstream
+git checkout -b submission upstream/main
+```
+
+### Copy AquaVeritas files onto submission branch (avoids cherry-pick conflicts)
+```bash
+git checkout main -- aquaveritas/
+git checkout main -- docker-compose.yaml
+git checkout main -- SETUP.md
+git checkout main -- README.md
+git push origin submission
+```
+
+### Open the PR
+```bash
+gh pr create \
+  --repo DPhi-Space/SimSat \
+  --head devleks:submission \
+  --base main \
+  --title "feat: AquaVeritas — on-board freshwater monitoring with fine-tuned LFM2.5-VL-450M" \
+  --body "$(cat <<'EOF'
+...body...
+EOF
+)"
+```
+
+---
+
+## 8f. leap-finetune Health Check
+
+### Verify installation and version
+```bash
+cd /Users/ml_labs/leap-finetune
+uv run leap-finetune --help
+```
+
+### Check repo is at latest upstream commit
+```bash
+git log --oneline -5
+git fetch origin --dry-run
+git log origin/main..HEAD --oneline
+```
+
+### List available job config templates
+```bash
+ls job_configs/
+```
+
+---
+
+## 8g. LEAP Bundle (Liquid Edge AI Platform)
+
+Converts the fine-tuned HF model to a Liquid-platform-native GGUF bundle.
+`leap-bundle` takes a local HF model directory and uploads it to the LEAP
+platform, which runs `convert_hf_to_gguf.py` server-side. The resulting bundle
+is separate from the GGUFs on HuggingFace — it is for on-board deployment via
+the Liquid Edge AI Platform.
+
+Run all commands from `/Users/ml_labs/leap-finetune` using `uv run`.
+
+### Check available commands
+```bash
+cd /Users/ml_labs/leap-finetune
+uv run leap-bundle --help
+```
+
+### List all bundle requests (most recent 50)
+```bash
+cd /Users/ml_labs/leap-finetune
+uv run leap-bundle list
+```
+**Sample output:**
+```
+Bundle Requests (50 most recent)
+┏━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ ID ┃ Input Path               ┃ Status            ┃ Creation                 ┃
+┡━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ 1  │ /data/aquaveritas-bundle │ Processing Failed │ 2026-05-04T14:34:31.719Z │
+└────┴──────────────────────────┴───────────────────┴──────────────────────────┘
+```
+
+### Cancel a failed request
+```bash
+cd /Users/ml_labs/leap-finetune
+uv run leap-bundle cancel 1
+```
+
+### Step 1 — Download fine-tuned model files from Modal volume
+```bash
+mkdir -p /Users/ml_labs/claudey/SimSat/aquaveritas/data/bundle-upload
+
+modal volume get aquaveritas-data aquaveritas-bundle/config.json           /Users/ml_labs/claudey/SimSat/aquaveritas/data/bundle-upload/config.json
+modal volume get aquaveritas-data aquaveritas-bundle/model.safetensors     /Users/ml_labs/claudey/SimSat/aquaveritas/data/bundle-upload/model.safetensors
+modal volume get aquaveritas-data aquaveritas-bundle/tokenizer.json        /Users/ml_labs/claudey/SimSat/aquaveritas/data/bundle-upload/tokenizer.json
+modal volume get aquaveritas-data aquaveritas-bundle/tokenizer_config.json /Users/ml_labs/claudey/SimSat/aquaveritas/data/bundle-upload/tokenizer_config.json
+modal volume get aquaveritas-data aquaveritas-bundle/processor_config.json /Users/ml_labs/claudey/SimSat/aquaveritas/data/bundle-upload/processor_config.json
+modal volume get aquaveritas-data aquaveritas-bundle/generation_config.json /Users/ml_labs/claudey/SimSat/aquaveritas/data/bundle-upload/generation_config.json
+modal volume get aquaveritas-data aquaveritas-bundle/chat_template.jinja   /Users/ml_labs/claudey/SimSat/aquaveritas/data/bundle-upload/chat_template.jinja
+```
+**Purpose:** Downloads the 7 model files from the Modal volume to a local directory.
+`leap-bundle create` requires a local path — it cannot read Modal volumes directly.
+
+### Step 2 — Validate the directory before uploading
+```bash
+cd /Users/ml_labs/leap-finetune
+uv run leap-bundle validate /Users/ml_labs/claudey/SimSat/aquaveritas/data/bundle-upload
+```
+**Purpose:** Checks for required files without uploading or creating a request.
+If this reports missing files, fetch them from the base model on HuggingFace before proceeding.
+
+### Step 3 — Create the bundle (Q8_0 backbone + F16 mmproj)
+```bash
+cd /Users/ml_labs/leap-finetune
+uv run leap-bundle create \
+  /Users/ml_labs/claudey/SimSat/aquaveritas/data/bundle-upload \
+  --quantization Q8_0 \
+  --mmproj-quantization f16
+```
+**Purpose:** Uploads the local model directory to the LEAP platform. The platform
+runs `convert_hf_to_gguf.py` server-side and produces two GGUF files: backbone
+(Q8_0) and vision projector (F16) — matching the existing HuggingFace artefacts.
+
+### Monitor conversion progress
+```bash
+cd /Users/ml_labs/leap-finetune
+uv run leap-bundle list
+```
+Status will move from `Uploading` → `Processing` → `Completed` (or `Processing Failed`).
+
+### Download the completed bundle
+```bash
+cd /Users/ml_labs/leap-finetune
+uv run leap-bundle download <bundle-id> --output /Users/ml_labs/claudey/SimSat/aquaveritas/data/models/
+```
+
+### Resume a failed upload (network interruption)
+```bash
+cd /Users/ml_labs/leap-finetune
+uv run leap-bundle resume <bundle-id>
 ```
 
 ---
@@ -1027,6 +1255,64 @@ If connection refused → LM Studio server not running. Start it from LM Studio 
 
 ---
 
+**`map background is black on HF Space`** (AVS-046)
+```
+Cause:  pydeck reads MAPBOX_API_KEY from the environment natively — not MAPBOX_TOKEN.
+        HF Spaces injects secrets under the name you give them in the Space settings.
+Fix:    After reading the token, set both:
+          os.environ["MAPBOX_API_KEY"] = token
+          pdk.settings.mapbox_key = token
+        Fallback style when no token: CartoDB Positron (no auth required):
+          "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json"
+```
+
+**`map markers fill entire viewport at zoom`** (AVS-047)
+```
+Cause:  get_radius is in metres. At zoom 5, get_radius=8_000 renders as ~100px+.
+        No upper pixel cap was set.
+Fix:    Add radius_max_pixels to every ScatterplotLayer:
+          layer = pdk.Layer("ScatterplotLayer", ...,
+              get_radius=8_000,
+              radius_min_pixels=5,
+              radius_max_pixels=11)
+        Also fix pitch: pitch=25 makes markers oval. Set pitch=0.
+```
+
+**`LlamaBackend.__init__() got an unexpected keyword argument 'timeout'`** (AVS-048)
+```
+Cause:  app.py called LlamaBackend(base_url=llama_url, timeout=120.0).
+        The LlamaBackend constructor only accepts base_url.
+Fix:    Remove the timeout kwarg:
+          backend = LlamaBackend(base_url=llama_url)
+        Timeout is set on the underlying OpenAI client inside LlamaBackend.__init__().
+```
+
+**`leap-bundle: Processing Failed — convert_hf_to_gguf.py returned non-zero exit status 1`**
+```
+Cause:  leap-bundle create was pointed at a Modal container-internal path (/data/aquaveritas-bundle)
+        rather than a local directory. The platform received no files to convert.
+        Also possible: the bundle directory contains only safetensors but is missing
+        config.json, tokenizer_config.json, or processor_config.json.
+Fix:    1. Download all model files from Modal volume to a local directory (see §8g Step 1).
+        2. Run: uv run leap-bundle validate <local-dir>  (confirms files are complete).
+        3. Cancel the failed request: uv run leap-bundle cancel <id>
+        4. Re-submit: uv run leap-bundle create <local-dir> --quantization Q8_0 --mmproj-quantization f16
+```
+
+**`HF Space changes corrupted the live app — tabs missing, KeyError, NameError`** (AVS-045)
+```
+Cause:  app/app.py was shared between the live app and hf_space/app.py.
+        HF-specific changes (removing PostgreSQL, reducing to 2 tabs, renaming
+        columns) leaked into the production file on git operations.
+Fix:    Live app and HF Space must be separate files:
+          app/app.py          ← production, 4 tabs, PostgreSQL
+          hf_space/app.py     ← read-only showcase, 2 tabs, SQLite
+        They share modules (db.py, evaluator.py, prose.py) but never share app.py.
+Prevention: Never run git checkout main -- app/app.py from inside hf_space/.
+```
+
+---
+
 ### Image Size Inspection
 
 **Find the largest PNG files on disk**
@@ -1066,9 +1352,11 @@ du -sh data/images/
 lsof -i :5432   # postgres default (should be Homebrew — NOT the Docker container)
 lsof -i :5433   # aquaveritas Docker postgres
 lsof -i :8080   # llama-server
+lsof -i :8081   # llama-server prose instance (Qwen)
 lsof -i :8234   # LM Studio
+lsof -i :8501   # Streamlit dashboard (local app)
+lsof -i :7860   # HF Space local preview
 lsof -i :9005   # SimSat API
-lsof -i :8501   # Streamlit dashboard
 ```
 
 **Quick connectivity matrix**
@@ -1705,5 +1993,15 @@ print(json.dumps(result, indent=2))
 | `evaluate.py --backend claude` | Eval — oracle baseline | ~30 min |
 | `predict.py` | Live loop | continuous |
 | `streamlit run app/app.py` | Dashboard | continuous |
+| `bash scripts/push_hf_space.sh` | HF Space push | ~2 min |
+| `modal app list` | Check running Modal jobs | seconds |
+| `modal volume ls aquaveritas-data` | Inspect volume contents | seconds |
+| `gh pr view 5 --repo DPhi-Space/SimSat` | View submission PR | seconds |
 | `test_prose_qwen.py` | Prose model test | ~30s |
 | `generate_incident_report.py` | PDF registry rebuild | seconds |
+| `leap-bundle list` | List LEAP bundle requests | seconds |
+| `leap-bundle validate <dir>` | Validate model dir before upload | seconds |
+| `leap-bundle cancel <id>` | Cancel a failed/stale bundle | seconds |
+| `leap-bundle create <dir> --quantization Q8_0 --mmproj-quantization f16` | Submit bundle to LEAP platform | ~5–15 min |
+| `leap-bundle download <id> --output <dir>` | Download completed bundle | variable |
+| `leap-bundle resume <id>` | Resume interrupted upload | variable |

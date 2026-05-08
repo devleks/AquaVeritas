@@ -849,7 +849,7 @@ with tab_live:
 
         timestamp = datetime.now(timezone.utc).isoformat()
         client    = SimSatClient()
-        backend   = LlamaBackend(base_url=llama_url, timeout=120.0)
+        backend   = LlamaBackend(base_url=llama_url)
 
         prog = st.progress(0, text="Fetching Sentinel-2 imagery…")
 
