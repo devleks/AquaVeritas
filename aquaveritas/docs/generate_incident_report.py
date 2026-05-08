@@ -1157,6 +1157,127 @@ TICKETS = [
         ],
         related=["AVS-042 (db.py credential exposure)", "AVS-043 (docker-compose password)"],
     ),
+
+    # ── Session 7–8 (May 7–8 2026) ──────────────────────────────────────────
+
+    dict(
+        id="AVS-045", severity="High",
+        title="HF deployment diff-bleed corrupted live app: 4 tabs missing, 2 runtime errors",
+        module="Dashboard / Deployment",
+        env="Local / Streamlit", version="v0.2.0", dataset="N/A",
+        steps=[
+            "Deploy hf_space/app.py to HuggingFace Spaces (read-only, 2-tab version).",
+            "During HF debugging, edit aquaveritas/app/app.py to resolve HF-specific issues "
+            "(column renames, tab reduction, PostgreSQL removal).",
+            "Git operations (commit, push) on main branch persist the edited production app.py.",
+            "Restart the local Streamlit server.",
+            "Observe: startup throws KeyError: 'location_name' and "
+            "NameError: name '_sustained_shrinkage' is not defined. All 4 tabs are missing.",
+        ],
+        actual="KeyError: 'location_name' on startup (column renamed for HF). "
+               "NameError: name '_sustained_shrinkage' is not defined (helper removed for HF). "
+               "All 4 tabs (Global Monitor, Live Prediction, Model Evaluation, Dataset) replaced "
+               "with a broken 2-tab HF layout. Production dashboard completely non-functional.",
+        expected="Live app and HF Space maintain independent app.py files. Changes to hf_space/app.py "
+                 "do not affect aquaveritas/app/app.py. 4-tab production dashboard runs correctly.",
+        evidence="Traceback: KeyError: 'location_name' in app/app.py line 312. "
+                 "Traceback: NameError: name '_sustained_shrinkage' is not defined in app/app.py line 445. "
+                 "All tab definitions missing from app.py — only 2 HF-mode tabs present.",
+        fix="Restored 4-tab structure from git history. Fixed KeyError by restoring original column "
+            "references. Restored _sustained_shrinkage() helper. Fixed Plotly zerolinecolor ValueError "
+            "(8-digit hex in chart layout). Restored globe zoom state machine. Restored "
+            "radius_max_pixels marker clamps. "
+            "Architectural decision: app/app.py and hf_space/app.py are permanently separate files. "
+            "They share modules (db.py, evaluator.py, prose.py) but never share the app entry point.",
+        files=[
+            "aquaveritas/app/app.py (restored to 4-tab production version)",
+        ],
+        related=["AVS-046 (Mapbox token env var name)", "AVS-047 (radius_max_pixels)"],
+    ),
+
+    dict(
+        id="AVS-046", severity="Medium",
+        title="HF Space map completely black: pydeck reads MAPBOX_API_KEY not MAPBOX_TOKEN",
+        module="Dashboard / HF Space",
+        env="HuggingFace Spaces", version="v0.2.0", dataset="N/A",
+        steps=[
+            "Add MAPBOX_TOKEN secret to HuggingFace Space settings.",
+            "Deploy hf_space/app.py which reads os.getenv('MAPBOX_TOKEN') and passes it to pdk.",
+            "Open the HF Space — map tile layer is completely black (no basemap visible).",
+        ],
+        actual="Map renders with a completely black background. No Mapbox tiles load despite the "
+               "MAPBOX_TOKEN secret being correctly set in HF Space settings.",
+        expected="Mapbox light-v11 basemap tiles load correctly. Map shows geographic context "
+                 "with water bodies, land, and country borders.",
+        evidence="Black map screenshot from HF Space. pydeck debug: MAP_STYLE set to "
+                 "'mapbox://styles/mapbox/light-v11' but tiles returning 401 Unauthorized. "
+                 "Root cause: pydeck's tile renderer reads os.environ['MAPBOX_API_KEY'] natively, "
+                 "not MAPBOX_TOKEN.",
+        fix="After reading the token from MAPBOX_TOKEN, set both environment variables: "
+            "os.environ['MAPBOX_API_KEY'] = token and pdk.settings.mapbox_key = token. "
+            "Added CartoDB Positron fallback style for when no token is available: "
+            "'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json'",
+        files=[
+            "aquaveritas/hf_space/app.py",
+        ],
+        related=["AVS-045 (HF deployment)"],
+    ),
+
+    dict(
+        id="AVS-047", severity="Medium",
+        title="Map markers fill entire viewport at zoom: missing radius_max_pixels, pitch=25",
+        module="Dashboard",
+        env="Local / HF Space", version="v0.2.0", dataset="N/A",
+        steps=[
+            "Open the dashboard Global Monitor tab.",
+            "Click a water body to zoom to site (zoom level 6).",
+            "Observe: site marker (ScatterplotLayer) expands to fill a large portion of the viewport.",
+            "Note also that pitch=25 causes markers to appear as ovals rather than circles.",
+        ],
+        actual="At zoom 6, the halo ScatterplotLayer with get_radius=18_000 (metres) renders as a "
+               "~200px+ filled circle covering the site. Markers are oval-shaped due to pitch=25. "
+               "The water body itself is obscured by the marker.",
+        expected="Markers maintain a consistent visual size (9px halo, 5px dot) regardless of zoom. "
+                 "Markers are perfect circles. Water body remains visible behind the marker.",
+        evidence="Screenshot showing marker covering entire site extent at zoom 6. "
+                 "pydeck docs: get_radius is in metres; at zoom 6, 18_000m = ~200 screen pixels "
+                 "without an upper pixel cap.",
+        fix="Added radius_min_pixels and radius_max_pixels to both ScatterplotLayers: "
+            "halo: get_radius=18_000, radius_min_pixels=9, radius_max_pixels=22. "
+            "dots: get_radius=8_000, radius_min_pixels=5, radius_max_pixels=11. "
+            "Fixed pitch: changed pitch=25 to pitch=0 in both global and site view states.",
+        files=[
+            "aquaveritas/hf_space/app.py",
+            "aquaveritas/app/app.py",
+        ],
+        related=["AVS-034 (original get_radius=220_000 fix)", "AVS-045 (HF deployment)"],
+    ),
+
+    dict(
+        id="AVS-048", severity="Low",
+        title="LlamaBackend.__init__() got unexpected keyword argument 'timeout'",
+        module="Dashboard / Live Prediction",
+        env="Local / Streamlit", version="v0.2.0", dataset="N/A",
+        steps=[
+            "Open the Live Prediction tab in the dashboard.",
+            "Select any water body and click Run Prediction.",
+            "Observe: TypeError raised immediately before inference begins.",
+        ],
+        actual="TypeError: LlamaBackend.__init__() got an unexpected keyword argument 'timeout'. "
+               "Live Prediction tab cannot run any inference.",
+        expected="LlamaBackend instantiates successfully. Inference runs and returns structured "
+                 "11-field JSON classification.",
+        evidence="Traceback: File app/app.py line 852, in <module>: "
+                 "backend = LlamaBackend(base_url=llama_url, timeout=120.0). "
+                 "LlamaBackend.__init__ signature (evaluator.py line 53): def __init__(self, base_url: str = LLAMA_URL).",
+        fix="Removed the timeout=120.0 kwarg from the LlamaBackend constructor call in app/app.py. "
+            "The timeout is managed by the underlying openai.OpenAI client inside LlamaBackend.__init__(). "
+            "If a custom timeout is needed, it should be passed to OpenAI(timeout=...) inside evaluator.py.",
+        files=[
+            "aquaveritas/app/app.py",
+        ],
+        related=["AVS-045 (HF deployment session)"],
+    ),
 ]
 
 # ── RCA Archive data for Critical/High tickets ────────────────────────────────
@@ -1843,6 +1964,46 @@ RCAS = [
         commit="(2026-05-06)",
         related=["AVS-042 (db.py credential exposure)", "AVS-043 (docker-compose password)"],
     ),
+    dict(
+        id="AVS-045",
+        title="HF Deployment Diff-Bleed: Live App Overwritten with HF-Only Code, 4 Tabs Lost",
+        status="Resolved", severity="High",
+        tags="#Deployment #HuggingFace #Dashboard #GitWorkflow",
+        summary=(
+            "During HuggingFace Space preparation, code differences between the HF-adapted app "
+            "and the production app/app.py were not tracked as separate files. Edits made to "
+            "hf_space/app.py were manually replicated into app/app.py, causing HF-specific patches "
+            "(Mapbox key lookup, missing imports) to overwrite production logic. The result was a "
+            "broken live app missing 4 tabs (Live Prediction, Dataset, Settings, Help) with "
+            "KeyError and NameError at runtime. The incident was caught during demo recording."
+        ),
+        trigger="Manual copy-paste sync between hf_space/app.py and app/app.py without diffing "
+                "first; HF-specific patches included in the paste scope.",
+        whys=[
+            "Why was the live app broken? -> Production app/app.py was overwritten with HF-specific code that removed 4 tabs.",
+            "Why were HF changes written into app/app.py? -> No separate file for HF variant; developer synced manually.",
+            "Why was there no separate file? -> HF deployment started as a copy of app.py; divergence not tracked from the start.",
+            "Why was diffing not done before paste? -> Time pressure; assumed the changes were additive, not destructive.",
+            "Why was there no automated deploy check? -> No CI/CD to test tab count or runtime errors pre-push.",
+        ],
+        data_integrity="No data loss. All observations and model weights intact. "
+                       "Dashboard functionality was temporarily broken during demo preparation.",
+        security="No security implications.",
+        client="Hackathon judges if the broken app had been recorded. Caught and fixed before submission.",
+        fix="Restored full tab structure to app/app.py from git history. "
+            "Established hf_space/app.py as a permanently separate file with only HF-specific patches. "
+            "Rule: never write HF patches into app/app.py. "
+            "Applied AVS-046 and AVS-047 fixes (Mapbox key, radius_max_pixels) to both files independently.",
+        safeguard="Maintain hf_space/app.py and app/app.py as permanently separate files. "
+                  "Before any cross-file sync, run diff first: `diff app/app.py hf_space/app.py`. "
+                  "Add tab count assertion to smoke test: verify 4 tabs render before committing either file.",
+        institutional="Two-file deployment model established: app/app.py (production, full), "
+                      "hf_space/app.py (HF Space, HF-specific patches only). "
+                      "diff before sync is now a mandatory step in the HF deployment checklist.",
+        jira="AVS-045",
+        commit="(2026-05-08)",
+        related=["AVS-046 (Mapbox key)", "AVS-047 (marker radius)"],
+    ),
 ]
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -2137,5 +2298,5 @@ def build_pdf(path):
 
 
 if __name__ == "__main__":
-    out = "/Users/ml_labs/claudey/SimSat/aquaveritas/docs/AVS_Incident_Registry_2026-05-06_v10.pdf"
+    out = "/Users/ml_labs/claudey/SimSat/aquaveritas/docs/AVS_Incident_Registry_2026-05-08_v11.pdf"
     build_pdf(out)
