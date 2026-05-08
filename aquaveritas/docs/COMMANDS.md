@@ -842,6 +842,99 @@ ls job_configs/
 
 ---
 
+## 8g. LEAP Bundle (Liquid Edge AI Platform)
+
+Converts the fine-tuned HF model to a Liquid-platform-native GGUF bundle.
+`leap-bundle` takes a local HF model directory and uploads it to the LEAP
+platform, which runs `convert_hf_to_gguf.py` server-side. The resulting bundle
+is separate from the GGUFs on HuggingFace — it is for on-board deployment via
+the Liquid Edge AI Platform.
+
+Run all commands from `/Users/ml_labs/leap-finetune` using `uv run`.
+
+### Check available commands
+```bash
+cd /Users/ml_labs/leap-finetune
+uv run leap-bundle --help
+```
+
+### List all bundle requests (most recent 50)
+```bash
+cd /Users/ml_labs/leap-finetune
+uv run leap-bundle list
+```
+**Sample output:**
+```
+Bundle Requests (50 most recent)
+┏━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ ID ┃ Input Path               ┃ Status            ┃ Creation                 ┃
+┡━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ 1  │ /data/aquaveritas-bundle │ Processing Failed │ 2026-05-04T14:34:31.719Z │
+└────┴──────────────────────────┴───────────────────┴──────────────────────────┘
+```
+
+### Cancel a failed request
+```bash
+cd /Users/ml_labs/leap-finetune
+uv run leap-bundle cancel 1
+```
+
+### Step 1 — Download fine-tuned model files from Modal volume
+```bash
+mkdir -p /Users/ml_labs/claudey/SimSat/aquaveritas/data/bundle-upload
+
+modal volume get aquaveritas-data aquaveritas-bundle/config.json           /Users/ml_labs/claudey/SimSat/aquaveritas/data/bundle-upload/config.json
+modal volume get aquaveritas-data aquaveritas-bundle/model.safetensors     /Users/ml_labs/claudey/SimSat/aquaveritas/data/bundle-upload/model.safetensors
+modal volume get aquaveritas-data aquaveritas-bundle/tokenizer.json        /Users/ml_labs/claudey/SimSat/aquaveritas/data/bundle-upload/tokenizer.json
+modal volume get aquaveritas-data aquaveritas-bundle/tokenizer_config.json /Users/ml_labs/claudey/SimSat/aquaveritas/data/bundle-upload/tokenizer_config.json
+modal volume get aquaveritas-data aquaveritas-bundle/processor_config.json /Users/ml_labs/claudey/SimSat/aquaveritas/data/bundle-upload/processor_config.json
+modal volume get aquaveritas-data aquaveritas-bundle/generation_config.json /Users/ml_labs/claudey/SimSat/aquaveritas/data/bundle-upload/generation_config.json
+modal volume get aquaveritas-data aquaveritas-bundle/chat_template.jinja   /Users/ml_labs/claudey/SimSat/aquaveritas/data/bundle-upload/chat_template.jinja
+```
+**Purpose:** Downloads the 7 model files from the Modal volume to a local directory.
+`leap-bundle create` requires a local path — it cannot read Modal volumes directly.
+
+### Step 2 — Validate the directory before uploading
+```bash
+cd /Users/ml_labs/leap-finetune
+uv run leap-bundle validate /Users/ml_labs/claudey/SimSat/aquaveritas/data/bundle-upload
+```
+**Purpose:** Checks for required files without uploading or creating a request.
+If this reports missing files, fetch them from the base model on HuggingFace before proceeding.
+
+### Step 3 — Create the bundle (Q8_0 backbone + F16 mmproj)
+```bash
+cd /Users/ml_labs/leap-finetune
+uv run leap-bundle create \
+  /Users/ml_labs/claudey/SimSat/aquaveritas/data/bundle-upload \
+  --quantization Q8_0 \
+  --mmproj-quantization f16
+```
+**Purpose:** Uploads the local model directory to the LEAP platform. The platform
+runs `convert_hf_to_gguf.py` server-side and produces two GGUF files: backbone
+(Q8_0) and vision projector (F16) — matching the existing HuggingFace artefacts.
+
+### Monitor conversion progress
+```bash
+cd /Users/ml_labs/leap-finetune
+uv run leap-bundle list
+```
+Status will move from `Uploading` → `Processing` → `Completed` (or `Processing Failed`).
+
+### Download the completed bundle
+```bash
+cd /Users/ml_labs/leap-finetune
+uv run leap-bundle download <bundle-id> --output /Users/ml_labs/claudey/SimSat/aquaveritas/data/models/
+```
+
+### Resume a failed upload (network interruption)
+```bash
+cd /Users/ml_labs/leap-finetune
+uv run leap-bundle resume <bundle-id>
+```
+
+---
+
 ## 9. Incident Report
 
 ### Regenerate the incident registry PDF
@@ -1192,6 +1285,18 @@ Cause:  app.py called LlamaBackend(base_url=llama_url, timeout=120.0).
 Fix:    Remove the timeout kwarg:
           backend = LlamaBackend(base_url=llama_url)
         Timeout is set on the underlying OpenAI client inside LlamaBackend.__init__().
+```
+
+**`leap-bundle: Processing Failed — convert_hf_to_gguf.py returned non-zero exit status 1`**
+```
+Cause:  leap-bundle create was pointed at a Modal container-internal path (/data/aquaveritas-bundle)
+        rather than a local directory. The platform received no files to convert.
+        Also possible: the bundle directory contains only safetensors but is missing
+        config.json, tokenizer_config.json, or processor_config.json.
+Fix:    1. Download all model files from Modal volume to a local directory (see §8g Step 1).
+        2. Run: uv run leap-bundle validate <local-dir>  (confirms files are complete).
+        3. Cancel the failed request: uv run leap-bundle cancel <id>
+        4. Re-submit: uv run leap-bundle create <local-dir> --quantization Q8_0 --mmproj-quantization f16
 ```
 
 **`HF Space changes corrupted the live app — tabs missing, KeyError, NameError`** (AVS-045)
@@ -1894,3 +1999,9 @@ print(json.dumps(result, indent=2))
 | `gh pr view 5 --repo DPhi-Space/SimSat` | View submission PR | seconds |
 | `test_prose_qwen.py` | Prose model test | ~30s |
 | `generate_incident_report.py` | PDF registry rebuild | seconds |
+| `leap-bundle list` | List LEAP bundle requests | seconds |
+| `leap-bundle validate <dir>` | Validate model dir before upload | seconds |
+| `leap-bundle cancel <id>` | Cancel a failed/stale bundle | seconds |
+| `leap-bundle create <dir> --quantization Q8_0 --mmproj-quantization f16` | Submit bundle to LEAP platform | ~5–15 min |
+| `leap-bundle download <id> --output <dir>` | Download completed bundle | variable |
+| `leap-bundle resume <id>` | Resume interrupted upload | variable |
