@@ -26,8 +26,9 @@ docs/AVS_Incident_Registry_*_v[0-9].pdf
 # Hackathon submission draft (local only)
 docs/SUBMISSION_DRAFT.md
 
-# Workflow evaluation (personal, local only)
+# Workflow evaluation and Claude session reference (personal, local only)
 docs/WORKFLOW_EVALUATION.md
+docs/PROJECT_CONTEXT.md
 
 # IDE / editor
 .vscode/
