@@ -149,8 +149,8 @@ Fine-tuning used [leap-finetune](https://github.com/LiquidAI/leap-finetune) on a
 
 **Dataset construction:**
 1. `scripts/collect_data.py` — fetches Sentinel-2 tiles (RGB + SWIR) from SimSat across 20 sites, 84 months of history (1,656 raw observations)
-2. `scripts/triage_images.py` — rejects tiles with ≥65% cloud cover or featureless open water; 328 observations survive quality triage
-3. `scripts/label_data.py` — Claude Opus (`claude-opus-4-5`) annotates each observation as the oracle teacher, producing 11-field structured JSON labels
+2. `scripts/triage_images.py` — rejects tiles with ≥65% cloud cover or featureless open water (1,656 raw → 1,280 curated across all collection runs)
+3. `scripts/label_data.py` — Claude Opus (`claude-opus-4-5`) annotates each curated observation as the oracle teacher, producing 11-field structured JSON labels
 4. `scripts/train.py` — exports the labeled dataset to HuggingFace in OpenAI chat format with image_url content blocks
 
 **Training parameters** ([`configs/aquaveritas_finetune_modal.yaml`](configs/aquaveritas_finetune_modal.yaml)):
