@@ -1,0 +1,55 @@
+@import "tailwindcss";
+
+/*
+ * AquaVeritas brand tokens
+ * Register: brand (marketing site, editorial)
+ * Theme: light — the satellite imagery is dark, the chrome stays light
+ * Palette: deep ocean primary + arid ochre as scarce highlight (≤10%)
+ */
+
+@theme inline {
+  /* Typography */
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  --font-display: var(--font-newsreader);
+
+  /* Palette — OKLCH for perceptually uniform tinting */
+  --color-ink: oklch(0.22 0.025 240);
+  --color-ink-muted: oklch(0.50 0.015 240);
+  --color-ink-faint: oklch(0.72 0.010 240);
+  --color-rule: oklch(0.91 0.008 240);
+  --color-surface: oklch(0.985 0.003 240);
+  --color-surface-alt: oklch(0.965 0.005 240);
+  --color-ocean: oklch(0.42 0.085 220);
+  --color-ocean-deep: oklch(0.30 0.095 220);
+  --color-ochre: oklch(0.68 0.110 60);
+  --color-ochre-deep: oklch(0.55 0.130 50);
+
+  /* Defaults consumed by body */
+  --color-background: var(--color-surface);
+  --color-foreground: var(--color-ink);
+}
+
+html,
+body {
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: var(--color-ocean);
+  color: var(--color-surface);
+}
+
+/*
+ * Motion language: slow ease-out-quint, no bounce, no elastic.
+ * Reflects "satellite drift" pacing in the V2 brand spec.
+ */
+@media (prefers-reduced-motion: no-preference) {
+  :root {
+    --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
+  }
+}
