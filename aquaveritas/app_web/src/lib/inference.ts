@@ -402,14 +402,47 @@ async function loadOnBackend(
     progress_callback: onHubProgress,
   });
 
-  // Model load is the one that can fail with a backend-init error.
-  const model = await mod.AutoModelForImageTextToText.from_pretrained(MODEL_ID, {
-    device: backend,
-    dtype: MODEL_DTYPE,
-    progress_callback: onHubProgress,
+  // Model load is the one that can fail OR hang on backend init.
+  // Race against a post-download timeout: once all files are at 100%, the
+  // session init runs synchronously inside ORT. If WebGPU JSEP hangs (some
+  // Safari versions), the promise never resolves and we'd be stuck. Detect
+  // hang and reject so the caller can fall back.
+  const HANG_MS = backend === "webgpu" ? 25_000 : 60_000;
+  let lastTick = Date.now();
+  const tickingProgress = (e: unknown) => {
+    lastTick = Date.now();
+    onHubProgress(e);
+  };
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  const hangPromise = new Promise<never>((_, reject) => {
+    const check = () => {
+      const idle = Date.now() - lastTick;
+      if (idle > HANG_MS) {
+        reject(
+          new Error(
+            `[${backend}] backend init stalled — no progress for ${Math.round(idle / 1000)}s after last download event`,
+          ),
+        );
+      } else {
+        timeoutHandle = setTimeout(check, 2_000);
+      }
+    };
+    timeoutHandle = setTimeout(check, HANG_MS);
   });
 
-  return { processor, model, backend };
+  try {
+    const model = await Promise.race([
+      mod.AutoModelForImageTextToText.from_pretrained(MODEL_ID, {
+        device: backend,
+        dtype: MODEL_DTYPE,
+        progress_callback: tickingProgress,
+      }),
+      hangPromise,
+    ]);
+    return { processor, model, backend };
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+  }
 }
 
 async function getModel(
@@ -514,20 +547,21 @@ async function realInference(
     },
   ];
 
+  // Lfm2VlProcessor._call signature is POSITIONAL: (images, text?, kwargs?).
+  // Passing a {text, images} object made the processor try to iterate that
+  // object as if it were the images list → "undefined is not iterable".
   const proc = processor as {
     apply_chat_template: (m: unknown, o: unknown) => Promise<unknown>;
     batch_decode: (ids: unknown, opts?: unknown) => string[];
-  } & ((args: { text: unknown; images: unknown }) => Promise<unknown>);
+  } & ((images: unknown, text?: unknown, kwargs?: unknown) => Promise<unknown>);
 
-  // Build the text-side template, then run the multimodal processor on it
-  // together with the image. The Lfm2VlProcessor accepts {text, images}.
   // Override the bundled chat template — see CHAT_TEMPLATE comment for why.
   const prompt = await proc.apply_chat_template(messages, {
     add_generation_prompt: true,
     tokenize: false,
     chat_template: CHAT_TEMPLATE,
   });
-  const inputs = (await proc({ text: prompt, images: image })) as {
+  const inputs = (await proc(image, prompt as string)) as {
     input_ids: { dims: number[] };
   } & Record<string, unknown>;
 
