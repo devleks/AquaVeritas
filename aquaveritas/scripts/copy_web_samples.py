@@ -48,6 +48,24 @@ TILES: list[tuple[str, str, str]] = [
     ("okavango",   "2024-07-01", "Okavango Delta"),        # peak flood pulse
     ("tonle_sap",  "2024-10-01", "Tonle Sap"),             # post-monsoon, lake at 4× normal area
     ("po_valley",  "2024-07-01", "Lake Garda"),            # alpine summer, no snow/cloud
+    # Remaining shrinkage
+    ("lake_urmia",           "2024-07-01", "Lake Urmia"),
+    ("dead_sea",             "2024-04-01", "Dead Sea"),
+    ("salton_sea",           "2024-10-01", "Salton Sea"),
+    # Remaining flooding / seasonal
+    ("lake_victoria",        "2024-07-01", "Lake Victoria"),
+    ("tana_river",           "2024-07-01", "Tana River Delta"),
+    ("amazon_delta",         "2024-07-01", "Amazon Delta"),
+    ("danube_delta",         "2024-10-01", "Danube Delta"),
+    ("congo_delta",          "2024-04-01", "Lower Congo River"),
+    # Remaining mixed / agricultural
+    ("mekong_delta",         "2024-10-01", "Mekong Delta"),
+    ("lake_turkana",         "2024-10-01", "Lake Turkana"),
+    ("lake_titicaca",        "2024-07-01", "Lake Titicaca"),
+    ("nile_delta",           "2024-01-01", "Nile Delta"),
+    ("omo_river",            "2024-10-01", "Omo River Delta"),
+    ("mesopotamian_marshes", "2024-07-01", "Mesopotamian Marshes"),
+    ("niger_delta",          "2024-07-01", "Niger Delta"),
 ]
 
 # Display targets

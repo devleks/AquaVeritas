@@ -7,23 +7,39 @@ import maplibregl, {
   MapLayerMouseEvent,
 } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
-import { SITES, CATEGORY_COLOR, CATEGORY_LABEL, type Site, type SiteCategory } from "@/lib/sites";
+import {
+  SITES,
+  CATEGORY_COLOR,
+  CATEGORY_LABEL,
+  type SiteCategory,
+} from "@/lib/sites";
 
 /**
  * Globe — MapLibre GL with native globe projection (v5+).
  *
+ * Controlled component: parent owns `selectedId`. We emit changes through
+ * `onSelectChange`. The visible detail / inference panel is rendered by the
+ * parent (/globe page) using GlobeInferencePanel.
+ *
  * Tile source: OpenFreeMap "positron" — no API key, vector tiles, free CDN.
- * Markers: GeoJSON source with two circle layers (halo + dot), filtered by
- * the currently-enabled categories.
- * Legend doubles as the category filter — click a category chip to toggle
- * its sites on the map.
- * Initial view: centred on Lake Chad to anchor the singular-crisis frame.
+ * Markers: GeoJSON source with halo + dot circle layers, filtered by the
+ * currently-enabled categories.
+ * Legend doubles as the category filter — click a category chip to toggle.
+ *
+ * Loading: no opaque overlay. The map renders progressively as MapLibre
+ * paints tiles; an earlier shim version occluded the map when style.load
+ * was slow or failed silently.
  */
-export default function Globe() {
+
+export interface GlobeProps {
+  selectedId: string | null;
+  onSelectChange: (id: string | null) => void;
+}
+
+export default function Globe({ selectedId, onSelectChange }: GlobeProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MLMap | null>(null);
   const [styleLoaded, setStyleLoaded] = useState(false);
-  const [selected, setSelected] = useState<Site | null>(null);
 
   const allCategories = useMemo(
     () => Object.keys(CATEGORY_LABEL) as SiteCategory[],
@@ -32,6 +48,13 @@ export default function Globe() {
   const [active, setActive] = useState<Set<SiteCategory>>(
     () => new Set(allCategories),
   );
+
+  // Refresh the source on filter or selection change. Kept in a ref so the
+  // map event handlers always see the latest data without re-binding.
+  const onSelectRef = useRef(onSelectChange);
+  useEffect(() => {
+    onSelectRef.current = onSelectChange;
+  }, [onSelectChange]);
 
   // ── Init the map ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -48,71 +71,62 @@ export default function Globe() {
     });
     mapRef.current = map;
 
+    // Surface MapLibre errors during dev — silenced in prod by Next.
+    map.on("error", (e) => {
+      console.error("[globe] maplibre error", e?.error ?? e);
+    });
+
     map.on("style.load", () => {
       try {
         map.setProjection({ type: "globe" });
       } catch {
-        /* fallback to mercator on older clients */
+        /* mercator fallback on older clients */
       }
 
-      map.addSource("sites", {
-        type: "geojson",
-        data: { type: "FeatureCollection", features: [] },
-      });
+      try {
+        map.addSource("sites", {
+          type: "geojson",
+          data: { type: "FeatureCollection", features: [] },
+        });
+        map.addLayer({
+          id: "sites-halo",
+          type: "circle",
+          source: "sites",
+          paint: {
+            "circle-radius": ["interpolate", ["linear"], ["zoom"], 1, 8, 5, 18],
+            "circle-color": ["get", "color"],
+            "circle-opacity": 0.18,
+            "circle-stroke-width": 0,
+          },
+        });
+        map.addLayer({
+          id: "sites-dot",
+          type: "circle",
+          source: "sites",
+          paint: {
+            "circle-radius": ["interpolate", ["linear"], ["zoom"], 1, 4, 5, 7],
+            "circle-color": ["get", "color"],
+            "circle-stroke-color": "#FFFFFF",
+            "circle-stroke-width": 1.5,
+            "circle-stroke-opacity": 0.95,
+          },
+        });
 
-      map.addLayer({
-        id: "sites-halo",
-        type: "circle",
-        source: "sites",
-        paint: {
-          "circle-radius": [
-            "interpolate", ["linear"], ["zoom"],
-            1, 8, 5, 18,
-          ],
-          "circle-color": ["get", "color"],
-          "circle-opacity": 0.18,
-          "circle-stroke-width": 0,
-        },
-      });
-      map.addLayer({
-        id: "sites-dot",
-        type: "circle",
-        source: "sites",
-        paint: {
-          "circle-radius": [
-            "interpolate", ["linear"], ["zoom"],
-            1, 4, 5, 7,
-          ],
-          "circle-color": ["get", "color"],
-          "circle-stroke-color": "#FFFFFF",
-          "circle-stroke-width": 1.5,
-          "circle-stroke-opacity": 0.95,
-        },
-      });
-
-      // Interactions
-      map.on("mouseenter", "sites-dot", () => {
-        map.getCanvas().style.cursor = "pointer";
-      });
-      map.on("mouseleave", "sites-dot", () => {
-        map.getCanvas().style.cursor = "";
-      });
-      map.on("click", "sites-dot", (e: MapLayerMouseEvent) => {
-        const f = e.features?.[0];
-        if (!f) return;
-        const id = (f.properties as { id: string }).id;
-        const site = SITES.find((s) => s.id === id) ?? null;
-        setSelected(site);
-        if (site) {
-          map.flyTo({
-            center: [site.lon, site.lat],
-            zoom: Math.max(map.getZoom(), 3.2),
-            speed: 0.7,
-            curve: 1.4,
-            essential: true,
-          });
-        }
-      });
+        map.on("mouseenter", "sites-dot", () => {
+          map.getCanvas().style.cursor = "pointer";
+        });
+        map.on("mouseleave", "sites-dot", () => {
+          map.getCanvas().style.cursor = "";
+        });
+        map.on("click", "sites-dot", (e: MapLayerMouseEvent) => {
+          const f = e.features?.[0];
+          if (!f) return;
+          const id = (f.properties as { id: string }).id;
+          onSelectRef.current(id);
+        });
+      } catch (err) {
+        console.error("[globe] failed adding sources/layers:", err);
+      }
 
       setStyleLoaded(true);
     });
@@ -124,7 +138,7 @@ export default function Globe() {
     };
   }, []);
 
-  // ── Push the filtered site set into the GeoJSON source ───────────────────
+  // ── Push filtered features into the source ───────────────────────────────
   useEffect(() => {
     if (!styleLoaded || !mapRef.current) return;
     const features = SITES.filter((s) => active.has(s.category)).map((s) => ({
@@ -140,31 +154,48 @@ export default function Globe() {
     const source = mapRef.current.getSource("sites") as GeoJSONSource | undefined;
     source?.setData({ type: "FeatureCollection", features });
 
-    // If the currently-selected site has been filtered out, clear the panel.
-    if (selected && !active.has(selected.category)) {
-      setSelected(null);
+    // If the currently-selected site got filtered out, clear it upstream.
+    if (selectedId) {
+      const stillVisible = features.some((f) => f.properties.id === selectedId);
+      if (!stillVisible) onSelectRef.current(null);
     }
-  }, [active, styleLoaded, selected]);
+  }, [active, styleLoaded, selectedId]);
 
-  const toggleCategory = useCallback((cat: SiteCategory) => {
-    setActive((prev) => {
-      const next = new Set(prev);
-      if (next.has(cat)) {
-        // Don't allow zero-active: clicking the last enabled one re-enables all.
-        if (next.size === 1) {
-          return new Set(allCategories);
-        }
-        next.delete(cat);
-      } else {
-        next.add(cat);
-      }
-      return next;
+  // ── External selection (e.g. clicked from site index) → fly to it ────────
+  useEffect(() => {
+    if (!styleLoaded || !mapRef.current || !selectedId) return;
+    const site = SITES.find((s) => s.id === selectedId);
+    if (!site) return;
+    mapRef.current.flyTo({
+      center: [site.lon, site.lat],
+      zoom: Math.max(mapRef.current.getZoom(), 3.2),
+      speed: 0.7,
+      curve: 1.4,
+      essential: true,
     });
-  }, [allCategories]);
+  }, [selectedId, styleLoaded]);
+
+  const toggleCategory = useCallback(
+    (cat: SiteCategory) => {
+      setActive((prev) => {
+        const next = new Set(prev);
+        if (next.has(cat)) {
+          if (next.size === 1) return new Set(allCategories);
+          next.delete(cat);
+        } else {
+          next.add(cat);
+        }
+        return next;
+      });
+    },
+    [allCategories],
+  );
 
   const categoryCounts = useMemo(() => {
     const counts: Record<SiteCategory, number> = {
-      shrinkage: 0, flooding: 0, mixed: 0,
+      shrinkage: 0,
+      flooding: 0,
+      mixed: 0,
     };
     for (const s of SITES) counts[s.category] += 1;
     return counts;
@@ -174,23 +205,24 @@ export default function Globe() {
     <div className="relative h-full w-full overflow-hidden">
       <div ref={containerRef} className="absolute inset-0" />
 
-      {/* Legend / filter */}
+      {/* Legend / filter — pointer-events-none on wrapper so map underneath
+          stays clickable; the buttons re-enable pointer events. */}
       <div className="pointer-events-none absolute left-6 top-6 z-10 flex flex-col gap-2 rounded-sm border border-[color:var(--color-rule)] bg-[color:var(--color-surface)]/95 p-4 text-xs shadow-sm backdrop-blur-sm">
         <p className="font-medium uppercase tracking-[0.18em] text-[color:var(--color-ink-faint)]">
           Click to filter
         </p>
         {allCategories.map((k) => {
-          const isActive = active.has(k);
+          const isOn = active.has(k);
           return (
             <button
               key={k}
               type="button"
               onClick={() => toggleCategory(k)}
               className={`pointer-events-auto flex items-center gap-2 text-left transition-opacity duration-300 ${
-                isActive ? "opacity-100" : "opacity-30 hover:opacity-60"
+                isOn ? "opacity-100" : "opacity-30 hover:opacity-60"
               }`}
               style={{ transitionTimingFunction: "var(--ease-out-quint)" }}
-              aria-pressed={isActive}
+              aria-pressed={isOn}
             >
               <span
                 aria-hidden
@@ -207,50 +239,6 @@ export default function Globe() {
           );
         })}
       </div>
-
-      {/* Detail panel */}
-      {selected && (
-        <aside className="absolute right-6 top-6 z-10 w-80 border border-[color:var(--color-rule)] bg-[color:var(--color-surface)]/98 p-6 shadow-md backdrop-blur-sm">
-          <button
-            type="button"
-            onClick={() => setSelected(null)}
-            className="absolute right-4 top-4 text-xs uppercase tracking-[0.18em] text-[color:var(--color-ink-faint)] transition-colors hover:text-[color:var(--color-ink)]"
-          >
-            Close
-          </button>
-          <p className="text-xs uppercase tracking-[0.18em] text-[color:var(--color-ocean)]">
-            {CATEGORY_LABEL[selected.category]}
-          </p>
-          <h2 className="mt-2 font-[family-name:var(--font-display)] text-2xl leading-tight tracking-tight text-[color:var(--color-ink)]">
-            {selected.name}
-          </h2>
-          <p className="mt-3 text-xs font-[family-name:var(--font-mono)] text-[color:var(--color-ink-faint)]">
-            {selected.lat.toFixed(3)}°{selected.lat >= 0 ? "N" : "S"} ·{" "}
-            {Math.abs(selected.lon).toFixed(3)}°{selected.lon >= 0 ? "E" : "W"}
-          </p>
-          {selected.blurb && (
-            <p className="mt-4 text-sm leading-relaxed text-[color:var(--color-ink-muted)]">
-              {selected.blurb}
-            </p>
-          )}
-          <a
-            href={`/live?site=${selected.id}`}
-            className="mt-6 inline-flex items-center gap-2 text-sm font-medium text-[color:var(--color-ink)] underline decoration-[color:var(--color-rule)] decoration-2 underline-offset-4 transition-colors hover:decoration-[color:var(--color-ocean)]"
-          >
-            Run inference on this site
-            <span aria-hidden>→</span>
-          </a>
-        </aside>
-      )}
-
-      {/* Loading shim until the map style finishes loading */}
-      {!styleLoaded && (
-        <div className="pointer-events-none absolute inset-0 z-0 flex items-center justify-center bg-[color:var(--color-surface)]">
-          <p className="text-xs uppercase tracking-[0.18em] text-[color:var(--color-ink-faint)]">
-            Loading globe…
-          </p>
-        </div>
-      )}
     </div>
   );
 }

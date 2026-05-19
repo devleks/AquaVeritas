@@ -1,4 +1,3 @@
-import { Suspense } from "react";
 import Link from "next/link";
 import InferenceRunner from "@/components/InferenceRunner";
 import Footer from "@/components/Footer";
@@ -64,21 +63,9 @@ export default function LivePage() {
       </section>
 
       {/* ── Runner ──────────────────────────────────────────────────────────── */}
-      <Suspense fallback={<RunnerFallback />}>
-        <InferenceRunner />
-      </Suspense>
+      <InferenceRunner />
 
       <Footer />
     </main>
-  );
-}
-
-function RunnerFallback() {
-  return (
-    <div className="mx-auto max-w-6xl px-6 py-12">
-      <p className="text-xs uppercase tracking-[0.18em] text-[color:var(--color-ink-faint)]">
-        Initialising runtime…
-      </p>
-    </div>
   );
 }

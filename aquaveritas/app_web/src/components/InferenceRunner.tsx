@@ -1,7 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useEffect, useState } from "react";
 import {
   BUFFER_FIELDS,
   CORE_FIELDS,
@@ -30,42 +29,10 @@ export default function InferenceRunner() {
   const [caps, setCaps] = useState<RuntimeCapabilities | null>(null);
   const [mode, setMode] = useState<Mode>("stub");
   const [state, setState] = useState<RunState>({ kind: "idle" });
-  const searchParams = useSearchParams();
-  const autoRunFired = useRef(false);
 
   useEffect(() => {
     detectCapabilities().then(setCaps);
   }, []);
-
-  /**
-   * Auto-select + auto-run when the URL has ?site=lake_chad (e.g. arriving
-   * from /globe). We auto-run only once per mount to avoid loops if the user
-   * later toggles modes. Uses Reference mode for the auto-run so first-time
-   * visitors don't trigger a 200 MB download without consent.
-   */
-  useEffect(() => {
-    if (!caps || autoRunFired.current) return;
-    const siteId = searchParams?.get("site");
-    if (!siteId) return;
-    const tile = SAMPLE_TILES.find((t) => t.siteId === siteId);
-    if (!tile) return;
-    autoRunFired.current = true;
-    void (async () => {
-      setState({ kind: "running", siteId });
-      try {
-        const result = await runInference(
-          { siteId },
-          { caps, mode: "stub" }, // never trigger a download from a URL param
-        );
-        setState({ kind: "done", siteId, result });
-      } catch (err) {
-        setState({
-          kind: "error",
-          message: err instanceof Error ? err.message : String(err),
-        });
-      }
-    })();
-  }, [caps, searchParams]);
 
   async function handleRun(tile: SampleTile) {
     if (!caps) return;
