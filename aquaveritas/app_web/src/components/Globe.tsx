@@ -1,27 +1,39 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import maplibregl, {
+  GeoJSONSource,
   Map as MLMap,
   MapLayerMouseEvent,
 } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
-import { SITES, CATEGORY_COLOR, CATEGORY_LABEL, type Site } from "@/lib/sites";
+import { SITES, CATEGORY_COLOR, CATEGORY_LABEL, type Site, type SiteCategory } from "@/lib/sites";
 
 /**
  * Globe — MapLibre GL with native globe projection (v5+).
  *
  * Tile source: OpenFreeMap "positron" — no API key, vector tiles, free CDN.
- * Markers: GeoJSON source with a circle layer, coloured by site category.
- * Click a site → side panel shows blurb + Sentinel-2 quick link.
- *
+ * Markers: GeoJSON source with two circle layers (halo + dot), filtered by
+ * the currently-enabled categories.
+ * Legend doubles as the category filter — click a category chip to toggle
+ * its sites on the map.
  * Initial view: centred on Lake Chad to anchor the singular-crisis frame.
  */
 export default function Globe() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MLMap | null>(null);
+  const [styleLoaded, setStyleLoaded] = useState(false);
   const [selected, setSelected] = useState<Site | null>(null);
 
+  const allCategories = useMemo(
+    () => Object.keys(CATEGORY_LABEL) as SiteCategory[],
+    [],
+  );
+  const [active, setActive] = useState<Set<SiteCategory>>(
+    () => new Set(allCategories),
+  );
+
+  // ── Init the map ─────────────────────────────────────────────────────────
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
 
@@ -34,69 +46,42 @@ export default function Globe() {
       bearing: 0,
       attributionControl: { compact: true },
     });
-
     mapRef.current = map;
 
-    // Native globe projection (MapLibre 5+)
     map.on("style.load", () => {
       try {
         map.setProjection({ type: "globe" });
       } catch {
-        // Fallback to mercator on older clients — no-op.
+        /* fallback to mercator on older clients */
       }
-
-      // GeoJSON source of sites
-      const features = SITES.map((s) => ({
-        type: "Feature" as const,
-        geometry: { type: "Point" as const, coordinates: [s.lon, s.lat] },
-        properties: {
-          id: s.id,
-          name: s.name,
-          category: s.category,
-          color: CATEGORY_COLOR[s.category],
-        },
-      }));
 
       map.addSource("sites", {
         type: "geojson",
-        data: { type: "FeatureCollection", features },
+        data: { type: "FeatureCollection", features: [] },
       });
 
-      // Halo (soft outer ring) for visibility against light/dark land
       map.addLayer({
         id: "sites-halo",
         type: "circle",
         source: "sites",
         paint: {
           "circle-radius": [
-            "interpolate",
-            ["linear"],
-            ["zoom"],
-            1,
-            8,
-            5,
-            18,
+            "interpolate", ["linear"], ["zoom"],
+            1, 8, 5, 18,
           ],
           "circle-color": ["get", "color"],
           "circle-opacity": 0.18,
           "circle-stroke-width": 0,
         },
       });
-
-      // Solid marker on top
       map.addLayer({
         id: "sites-dot",
         type: "circle",
         source: "sites",
         paint: {
           "circle-radius": [
-            "interpolate",
-            ["linear"],
-            ["zoom"],
-            1,
-            4,
-            5,
-            7,
+            "interpolate", ["linear"], ["zoom"],
+            1, 4, 5, 7,
           ],
           "circle-color": ["get", "color"],
           "circle-stroke-color": "#FFFFFF",
@@ -105,7 +90,7 @@ export default function Globe() {
         },
       });
 
-      // Cursor + click interactions
+      // Interactions
       map.on("mouseenter", "sites-dot", () => {
         map.getCanvas().style.cursor = "pointer";
       });
@@ -128,26 +113,85 @@ export default function Globe() {
           });
         }
       });
+
+      setStyleLoaded(true);
     });
 
     return () => {
       map.remove();
       mapRef.current = null;
+      setStyleLoaded(false);
     };
+  }, []);
+
+  // ── Push the filtered site set into the GeoJSON source ───────────────────
+  useEffect(() => {
+    if (!styleLoaded || !mapRef.current) return;
+    const features = SITES.filter((s) => active.has(s.category)).map((s) => ({
+      type: "Feature" as const,
+      geometry: { type: "Point" as const, coordinates: [s.lon, s.lat] },
+      properties: {
+        id: s.id,
+        name: s.name,
+        category: s.category,
+        color: CATEGORY_COLOR[s.category],
+      },
+    }));
+    const source = mapRef.current.getSource("sites") as GeoJSONSource | undefined;
+    source?.setData({ type: "FeatureCollection", features });
+
+    // If the currently-selected site has been filtered out, clear the panel.
+    if (selected && !active.has(selected.category)) {
+      setSelected(null);
+    }
+  }, [active, styleLoaded, selected]);
+
+  const toggleCategory = useCallback((cat: SiteCategory) => {
+    setActive((prev) => {
+      const next = new Set(prev);
+      if (next.has(cat)) {
+        // Don't allow zero-active: clicking the last enabled one re-enables all.
+        if (next.size === 1) {
+          return new Set(allCategories);
+        }
+        next.delete(cat);
+      } else {
+        next.add(cat);
+      }
+      return next;
+    });
+  }, [allCategories]);
+
+  const categoryCounts = useMemo(() => {
+    const counts: Record<SiteCategory, number> = {
+      shrinkage: 0, flooding: 0, mixed: 0,
+    };
+    for (const s of SITES) counts[s.category] += 1;
+    return counts;
   }, []);
 
   return (
     <div className="relative h-full w-full overflow-hidden">
       <div ref={containerRef} className="absolute inset-0" />
 
-      {/* Legend */}
+      {/* Legend / filter */}
       <div className="pointer-events-none absolute left-6 top-6 z-10 flex flex-col gap-2 rounded-sm border border-[color:var(--color-rule)] bg-[color:var(--color-surface)]/95 p-4 text-xs shadow-sm backdrop-blur-sm">
         <p className="font-medium uppercase tracking-[0.18em] text-[color:var(--color-ink-faint)]">
-          Site category
+          Click to filter
         </p>
-        {(Object.keys(CATEGORY_LABEL) as Array<keyof typeof CATEGORY_LABEL>).map(
-          (k) => (
-            <div key={k} className="flex items-center gap-2">
+        {allCategories.map((k) => {
+          const isActive = active.has(k);
+          return (
+            <button
+              key={k}
+              type="button"
+              onClick={() => toggleCategory(k)}
+              className={`pointer-events-auto flex items-center gap-2 text-left transition-opacity duration-300 ${
+                isActive ? "opacity-100" : "opacity-30 hover:opacity-60"
+              }`}
+              style={{ transitionTimingFunction: "var(--ease-out-quint)" }}
+              aria-pressed={isActive}
+            >
               <span
                 aria-hidden
                 className="inline-block h-2.5 w-2.5 rounded-full"
@@ -156,9 +200,12 @@ export default function Globe() {
               <span className="text-[color:var(--color-ink-muted)]">
                 {CATEGORY_LABEL[k]}
               </span>
-            </div>
-          ),
-        )}
+              <span className="ml-auto pl-3 font-[family-name:var(--font-mono)] text-[10px] text-[color:var(--color-ink-faint)]">
+                {categoryCounts[k]}
+              </span>
+            </button>
+          );
+        })}
       </div>
 
       {/* Detail panel */}
@@ -178,7 +225,7 @@ export default function Globe() {
             {selected.name}
           </h2>
           <p className="mt-3 text-xs font-[family-name:var(--font-mono)] text-[color:var(--color-ink-faint)]">
-            {selected.lat.toFixed(3)}°{selected.lat >= 0 ? "N" : "S"} · {" "}
+            {selected.lat.toFixed(3)}°{selected.lat >= 0 ? "N" : "S"} ·{" "}
             {Math.abs(selected.lon).toFixed(3)}°{selected.lon >= 0 ? "E" : "W"}
           </p>
           {selected.blurb && (
@@ -194,6 +241,15 @@ export default function Globe() {
             <span aria-hidden>→</span>
           </a>
         </aside>
+      )}
+
+      {/* Loading shim until the map style finishes loading */}
+      {!styleLoaded && (
+        <div className="pointer-events-none absolute inset-0 z-0 flex items-center justify-center bg-[color:var(--color-surface)]">
+          <p className="text-xs uppercase tracking-[0.18em] text-[color:var(--color-ink-faint)]">
+            Loading globe…
+          </p>
+        </div>
       )}
     </div>
   );

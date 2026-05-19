@@ -1,4 +1,5 @@
 import Link from "next/link";
+import Footer from "@/components/Footer";
 import {
   FIELDS,
   HEADLINES,
@@ -462,25 +463,7 @@ export default function MethodologyPage() {
         </div>
       </section>
 
-      {/* ── Footer ──────────────────────────────────────────────────────────── */}
-      <footer className="bg-[color:var(--color-ink)] text-[color:var(--color-surface)]">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-10">
-          <p className="font-[family-name:var(--font-display)] text-lg tracking-tight">
-            AquaVeritas
-          </p>
-          <div className="flex items-center gap-6 text-sm">
-            <Link href="/" className="text-[color:var(--color-ink-faint)] hover:text-white">
-              Home
-            </Link>
-            <Link href="/globe" className="text-[color:var(--color-ink-faint)] hover:text-white">
-              Globe
-            </Link>
-            <Link href="/live" className="text-[color:var(--color-ink-faint)] hover:text-white">
-              Live inference
-            </Link>
-          </div>
-        </div>
-      </footer>
+      <Footer />
     </main>
   );
 }

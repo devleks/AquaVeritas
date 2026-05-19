@@ -1,5 +1,7 @@
+import { Suspense } from "react";
 import Link from "next/link";
 import InferenceRunner from "@/components/InferenceRunner";
+import Footer from "@/components/Footer";
 
 export const metadata = {
   title: "Live inference — AquaVeritas",
@@ -62,7 +64,21 @@ export default function LivePage() {
       </section>
 
       {/* ── Runner ──────────────────────────────────────────────────────────── */}
-      <InferenceRunner />
+      <Suspense fallback={<RunnerFallback />}>
+        <InferenceRunner />
+      </Suspense>
+
+      <Footer />
     </main>
+  );
+}
+
+function RunnerFallback() {
+  return (
+    <div className="mx-auto max-w-6xl px-6 py-12">
+      <p className="text-xs uppercase tracking-[0.18em] text-[color:var(--color-ink-faint)]">
+        Initialising runtime…
+      </p>
+    </div>
   );
 }
