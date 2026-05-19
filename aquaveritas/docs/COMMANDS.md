@@ -943,6 +943,133 @@ uv run leap-bundle resume <bundle-id>
 
 ---
 
+## 8h. Git Remote Recovery
+
+If the local `origin` remote has gone missing (rare but possible after a
+repository move, fork transfer, or manual remote manipulation), this is the
+recovery path. It happened once on this project after the GitHub-side rename
+from `devleks/SimSat` to `devleks/AquaVeritas`: a stale `git push` worked via an
+auto-resolved remote earlier in the session, then later the same command failed
+because `origin` was no longer registered locally.
+
+### Diagnose: why is push failing?
+```bash
+git push
+```
+**Sample output (failure):**
+```
+fatal: No configured push destination.
+Either specify the URL from the command-line or configure a remote repository
+using
+
+    git remote add <name> <url>
+
+and then push using the remote name
+
+    git push <name>
+```
+**Purpose:** Confirms `origin` is not set. Inspect what remotes DO exist and the
+tracking state of the current branch:
+```bash
+git branch -vv | head -5
+git remote -v
+```
+**Sample output:**
+```
+* main       09d6951 Gitignore WORKFLOW_DIAGRAM.html (visual workflow reference, local only)
+  submission 734a4c2 [upstream/main: ahead 4] Fix leap-bundle download flag
+fork      https://github.com/devleks/SimSat.git (fetch)
+fork      https://github.com/devleks/SimSat.git (push)
+upstream  https://github.com/DPhi-Space/SimSat.git (fetch)
+upstream  https://github.com/DPhi-Space/SimSat.git (push)
+```
+
+### Re-add origin and inspect divergence
+```bash
+git remote add origin https://github.com/devleks/AquaVeritas.git
+git fetch origin
+git log --oneline main..origin/main      # commits on remote not local
+git log --oneline origin/main..main      # commits local not on remote
+git diff --stat origin/main main         # actual file-content delta
+```
+**Purpose:** Distinguishes the two failure modes:
+- **Real divergence** — the file-level diff shows substantive changes only on
+  one side. Resolve with merge or rebase.
+- **SHA-only divergence** — `git log` shows different commit SHAs but `git
+  diff --stat` shows nothing or only the genuine new commits. This means the
+  trees match for older commits and a normal rebase will produce phantom
+  conflicts (it tries to re-apply identical changes against identical context).
+
+**Sample output for SHA-only divergence (this project):**
+```
+ aquaveritas/.gitignore | 1 +
+ 1 file changed, 1 insertion(+)
+```
+Only the latest local commit's actual change is in the diff. Older commits with
+different SHAs have identical tree state.
+
+### Reset to origin and cherry-pick only the genuinely new commit
+```bash
+git reset --hard origin/main
+git cherry-pick <local-new-commit-sha>
+```
+**Sample output:**
+```
+HEAD is now at f30bfc6 Gitignore PROJECT_CONTEXT.md (Claude session reference, local only)
+[main 70c1b7c] Gitignore WORKFLOW_DIAGRAM.html (visual workflow reference, local only)
+ 1 file changed, 1 insertion(+)
+```
+**Why cherry-pick over rebase:** When local SHAs differ from remote SHAs but
+the underlying file content is identical, `git rebase origin/main` will replay
+each local commit and try to merge changes that are already present. The
+three-way merge fails because both sides contain the change. Cherry-pick
+applies only the specific commit you ask for, which avoids the phantom-conflict
+trap entirely.
+
+**Safety note:** `git reset --hard origin/main` is destructive. Always run `git
+diff --stat origin/main main` first and confirm the only delta is the commit
+you intend to cherry-pick. If real local-only changes exist, use `git stash`
+or `git branch backup-main` before the reset.
+
+### Push and re-establish upstream tracking
+```bash
+git push --set-upstream origin main
+```
+**Sample output:**
+```
+To https://github.com/devleks/AquaVeritas.git
+   f30bfc6..70c1b7c  main -> main
+branch 'main' set up to track 'origin/main'.
+```
+**Purpose:** The `--set-upstream` flag (`-u` short form) is required on the
+first push after re-creating origin. Subsequent `git push` invocations then
+work without arguments. Without this flag, every push needs `git push origin
+main` explicitly.
+
+### Verify the recovery
+```bash
+git remote -v
+git branch -vv | head -3
+git log --oneline -3
+```
+**Sample output:**
+```
+fork      https://github.com/devleks/SimSat.git (fetch)
+fork      https://github.com/devleks/SimSat.git (push)
+origin    https://github.com/devleks/AquaVeritas.git (fetch)
+origin    https://github.com/devleks/AquaVeritas.git (push)
+upstream  https://github.com/DPhi-Space/SimSat.git (fetch)
+upstream  https://github.com/DPhi-Space/SimSat.git (push)
+
+* main 70c1b7c [origin/main] Gitignore WORKFLOW_DIAGRAM.html (visual workflow reference, local only)
+70c1b7c Gitignore WORKFLOW_DIAGRAM.html (visual workflow reference, local only)
+f30bfc6 Gitignore PROJECT_CONTEXT.md (Claude session reference, local only)
+d17d1fa Gitignore WORKFLOW_EVALUATION.md (personal, local only)
+```
+The `[origin/main]` annotation in `git branch -vv` confirms tracking is restored.
+
+---
+
 ## 9. Incident Report
 
 ### Regenerate the incident registry PDF
@@ -2013,3 +2140,22 @@ print(json.dumps(result, indent=2))
 | `leap-bundle create <dir> --quantization Q8_0 --mmproj-quantization f16` | Submit bundle to LEAP platform | ~5–15 min |
 | `leap-bundle download <id> --output-path <dir>` | Download completed bundle | variable |
 | `leap-bundle resume <id>` | Resume interrupted upload | variable |
+| `git remote add origin <url> && git fetch origin` | Recover missing origin remote | seconds |
+| `git diff --stat origin/main main` | Distinguish SHA-only vs real divergence | seconds |
+| `git reset --hard origin/main && git cherry-pick <sha>` | Resolve SHA-only divergence | seconds |
+| `git push --set-upstream origin main` | First push after re-creating origin | seconds |
+
+---
+
+## Changelog
+
+- **2026-05-08** — Added §8h Git Remote Recovery (diagnose, re-add origin,
+  cherry-pick over rebase, set-upstream). Captures the SHA-only divergence
+  pattern observed after the GitHub-side `devleks/SimSat` → `devleks/AquaVeritas`
+  rename. Quick Reference table extended.
+- **2026-05-08** — Added §8g LEAP Bundle workflow (list, validate, cancel,
+  create with Q8_0 + F16 mmproj, download with `--output-path`, resume),
+  troubleshooting entry for `convert_hf_to_gguf.py` non-zero exit.
+- **2026-05-08** — Added §8d Modal volume inspection, §8e GitHub PR commands,
+  §8f leap-finetune health check, troubleshooting entries for AVS-045 to AVS-048.
+
