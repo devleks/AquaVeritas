@@ -173,13 +173,37 @@ const REFERENCE_OUTPUTS: Record<string, Prediction> = {
 
 // ── Capability detection ─────────────────────────────────────────────────────
 
+/**
+ * Safari's WebGPU implementation does not expose the `webgpuInit` symbol that
+ * onnxruntime-web's JSEP runtime calls during session creation. The adapter
+ * request succeeds, the device is allocated, but the bridge between ORT's
+ * JavaScript Execution Provider and Safari's WebGPU runtime is incomplete.
+ * Detect Safari (real Safari, not Chrome-on-iOS or other UAs with "Safari")
+ * and short-circuit the WebGPU path so we route to WASM cleanly without the
+ * alarming "no available backend" stack trace in the console.
+ *
+ * As of 2026 this affects all shipping Safari versions through 26.x. When
+ * Apple lands the missing JSEP hooks (tracked in WebKit Bugzilla #283xxx)
+ * this check can be removed.
+ */
+function isSafariWithoutOrtWebgpu(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const ua = navigator.userAgent;
+  // True Safari: has "Safari/", does NOT have "Chrome/" or "Chromium/" or
+  // "Edg/" or "OPR/" (Chrome-derivative UAs all include "Safari/" too).
+  return (
+    /Safari\//.test(ua) &&
+    !/Chrome\/|Chromium\/|Edg\/|OPR\/|FxiOS|CriOS/.test(ua)
+  );
+}
+
 export async function detectCapabilities(): Promise<RuntimeCapabilities> {
   if (typeof navigator === "undefined") {
     return { webgpu: false, wasm: false, realInference: false };
   }
 
   let webgpu = false;
-  if ("gpu" in navigator) {
+  if ("gpu" in navigator && !isSafariWithoutOrtWebgpu()) {
     try {
       const adapter = await (navigator as Navigator & {
         gpu?: { requestAdapter: () => Promise<unknown> };
@@ -492,7 +516,11 @@ async function getModel(
       // promise on a different backend.
       _loadedPromise = null;
       if (preferred === "webgpu") {
-        console.warn(
+        // Demoted from warn → info: this is expected behaviour on browsers
+        // where ORT's JSEP runtime is incomplete. The Safari pre-detect in
+        // detectCapabilities() should already have routed us to WASM, but
+        // this is the runtime safety net for other browsers that surprise us.
+        console.info(
           "[aquaveritas] WebGPU backend failed, falling back to WASM:",
           err,
         );
