@@ -37,13 +37,17 @@ from pathlib import Path
 from PIL import Image
 
 # ── Tiles to ship in the public web bundle ───────────────────────────────────
-# (site_id, date, label) — one tile per site_id for the demo gallery.
+# (site_id, date, label) — one tile per site_id at the most visually
+# informative pass for that site's regime. Dates differ on purpose:
+#   - shrinkage sites: dry-season capture shows the loss most starkly
+#   - flooding sites: peak-flood capture shows the regime in action
+#   - mixed/alpine sites: summer capture shows the lake without snow/cloud
 TILES: list[tuple[str, str, str]] = [
-    ("lake_chad",  "2024-01-01", "Lake Chad"),
-    ("aral_sea",   "2024-01-01", "Aral Sea South Basin"),
-    ("okavango",   "2024-01-01", "Okavango Delta"),
-    ("tonle_sap",  "2024-01-01", "Tonle Sap"),
-    ("po_valley",  "2024-01-01", "Lake Garda"),
+    ("lake_chad",  "2024-01-01", "Lake Chad"),             # dry season, Sahel
+    ("aral_sea",   "2024-01-01", "Aral Sea South Basin"),  # winter, salt flats clearest
+    ("okavango",   "2024-07-01", "Okavango Delta"),        # peak flood pulse
+    ("tonle_sap",  "2024-10-01", "Tonle Sap"),             # post-monsoon, lake at 4× normal area
+    ("po_valley",  "2024-07-01", "Lake Garda"),            # alpine summer, no snow/cloud
 ]
 
 # Display targets
