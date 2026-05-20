@@ -56,15 +56,40 @@ export default function Globe({ selectedId, onSelectChange }: GlobeProps) {
     onSelectRef.current = onSelectChange;
   }, [onSelectChange]);
 
+  const [debug, setDebug] = useState<string>("init");
+  const [fatal, setFatal] = useState<string | null>(null);
+
   // ── Init the map ─────────────────────────────────────────────────────────
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
+
+    // Hard precheck: WebGL must be available. Safari Private mode and some
+    // privacy extensions block the WebGL context entirely, and MapLibre will
+    // then fail without surfacing a useful error. Catching it ourselves lets
+    // us show the user a clear explanation instead of a blank canvas.
+    const testCanvas = document.createElement("canvas");
+    const hasWebGL = Boolean(
+      testCanvas.getContext("webgl2") ||
+        testCanvas.getContext("webgl") ||
+        (testCanvas.getContext("experimental-webgl") as RenderingContext | null),
+    );
+    if (!hasWebGL) {
+      console.error("[globe] WebGL not available — map cannot render");
+      setFatal(
+        "WebGL is not available in this browser session. This commonly happens in Safari Private windows or with strict tracking-prevention. Switch to a normal window (or Chrome / Brave / Edge) to see the globe.",
+      );
+      setDebug("no webgl");
+      return;
+    }
+
+    console.log("[globe] creating map instance");
+    setDebug("creating map");
 
     const map = new maplibregl.Map({
       container: containerRef.current,
       style: "https://tiles.openfreemap.org/styles/positron",
       center: [14.25, 12.95], // Lake Chad
-      zoom: 1.3,
+      zoom: 1.5,
       pitch: 0,
       bearing: 0,
       attributionControl: { compact: true },
@@ -73,15 +98,27 @@ export default function Globe({ selectedId, onSelectChange }: GlobeProps) {
 
     // Surface MapLibre errors during dev — silenced in prod by Next.
     map.on("error", (e) => {
+      const msg = e?.error?.message ?? String(e?.error ?? e);
       console.error("[globe] maplibre error", e?.error ?? e);
+      setDebug(`error: ${msg.slice(0, 80)}`);
+    });
+
+    // First "load" — fires after the first frame is rendered, not just style.
+    map.on("load", () => {
+      console.log("[globe] map.on(load) fired");
+      setDebug("loaded");
+      // Force a resize in case the container changed size during init.
+      requestAnimationFrame(() => map.resize());
     });
 
     map.on("style.load", () => {
-      try {
-        map.setProjection({ type: "globe" });
-      } catch {
-        /* mercator fallback on older clients */
-      }
+      console.log("[globe] style.load fired");
+      setDebug("style loaded");
+
+      // Globe projection deliberately disabled for now — investigating
+      // whether v5 globe + positron is the blank-canvas culprit. Mercator
+      // is reliable; the V2 plan can re-enable globe later.
+      // try { map.setProjection({ type: "globe" }); } catch {}
 
       try {
         map.addSource("sites", {
@@ -129,9 +166,19 @@ export default function Globe({ selectedId, onSelectChange }: GlobeProps) {
       }
 
       setStyleLoaded(true);
+      console.log("[globe] sources/layers added, styleLoaded=true");
+      setDebug("ready");
     });
 
+    // Belt-and-suspenders: observe container resize so MapLibre repaints if
+    // layout shifts after init (common when fonts load and bump the page).
+    const ro = new ResizeObserver(() => {
+      map.resize();
+    });
+    ro.observe(containerRef.current);
+
     return () => {
+      ro.disconnect();
       map.remove();
       mapRef.current = null;
       setStyleLoaded(false);
@@ -203,7 +250,38 @@ export default function Globe({ selectedId, onSelectChange }: GlobeProps) {
 
   return (
     <div className="relative h-full w-full overflow-hidden">
-      <div ref={containerRef} className="absolute inset-0" />
+      <div
+        ref={containerRef}
+        className="absolute inset-0"
+        style={{ background: "var(--color-surface-alt)" }}
+      />
+
+      {/* Fatal error overlay (e.g. no WebGL) — visible explanation rather
+          than a blank canvas. Pointer-events-auto so the user can read it. */}
+      {fatal && (
+        <div className="absolute inset-0 z-20 flex items-center justify-center bg-[color:var(--color-surface)]/95 p-12">
+          <div className="max-w-md text-center">
+            <p className="text-xs uppercase tracking-[0.18em] text-[color:var(--color-ochre-deep)]">
+              Map unavailable in this browser
+            </p>
+            <p className="mt-3 text-sm leading-relaxed text-[color:var(--color-ink)]">
+              {fatal}
+            </p>
+            <p className="mt-6 text-xs text-[color:var(--color-ink-muted)]">
+              The site index below still works — click any &ldquo;Run
+              inference →&rdquo; row to see the model&rsquo;s assessment
+              of that site.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Diagnostic badge — shows MapLibre lifecycle state so we can see
+          if the canvas is initialising or failing silently. Bottom-LEFT so
+          the inference panel on the right doesn't cover it. */}
+      <div className="pointer-events-none absolute bottom-3 left-3 z-10 rounded-sm bg-[color:var(--color-surface)]/90 px-2 py-1 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.16em] text-[color:var(--color-ink-muted)] backdrop-blur-sm">
+        globe: {debug}
+      </div>
 
       {/* Legend / filter — pointer-events-none on wrapper so map underneath
           stays clickable; the buttons re-enable pointer events. */}

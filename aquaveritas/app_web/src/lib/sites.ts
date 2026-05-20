@@ -214,9 +214,15 @@ export const CATEGORY_LABEL: Record<SiteCategory, string> = {
  * Marker colors tied to the brand palette (see globals.css).
  * Restrained: ochre is reserved for the loss category — the eye is drawn to
  * the same color used for "lost their lake" on the hero.
+ *
+ * Hex (not OKLCH): MapLibre's color parser only accepts hex/rgb/hsl. These
+ * values are hex equivalents of the OKLCH brand tokens in globals.css:
+ *   shrinkage  oklch(0.62 0.130 50)   → #CA7420  arid ochre, deepened
+ *   flooding   oklch(0.50 0.090 220)  → #2C7190  deep ocean
+ *   mixed      oklch(0.55 0.020 240)  → #7F8490  muted blue-grey
  */
 export const CATEGORY_COLOR: Record<SiteCategory, string> = {
-  shrinkage: "oklch(0.62 0.130 50)", // arid ochre, deepened
-  flooding: "oklch(0.50 0.090 220)", // deep ocean
-  mixed: "oklch(0.55 0.020 240)", // muted ink-tinted neutral
+  shrinkage: "#CA7420",
+  flooding: "#2C7190",
+  mixed: "#7F8490",
 };
