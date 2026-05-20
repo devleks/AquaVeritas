@@ -92,32 +92,59 @@ export default function Globe({ selectedId, onSelectChange }: GlobeProps) {
     //     render, the failure is in the WebGL context or canvas sizing,
     //     not in the tile pipeline.
     // We can swap back to vector once /globe is verified working everywhere.
+    // CARTO basemaps — public CDN, explicit CORS headers, designed for
+    // use from any origin including localhost. Three layer variants
+    // available; "dark_all" gives us a deep-ocean look that fits the brand
+    // and contrasts the warm ochre site dots. OSM direct was failing
+    // silently — likely cross-origin policy from localhost.
     const map = new maplibregl.Map({
       container: containerRef.current,
       style: {
         version: 8,
         sources: {
-          osm: {
+          carto: {
             type: "raster",
             tiles: [
-              "https://a.tile.openstreetmap.org/{z}/{x}/{y}.png",
-              "https://b.tile.openstreetmap.org/{z}/{x}/{y}.png",
-              "https://c.tile.openstreetmap.org/{z}/{x}/{y}.png",
+              "https://a.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png",
+              "https://b.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png",
+              "https://c.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png",
+              "https://d.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png",
             ],
             tileSize: 256,
             attribution:
-              '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+              '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions">CARTO</a>',
+          },
+          "carto-labels": {
+            type: "raster",
+            tiles: [
+              "https://a.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}.png",
+              "https://b.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}.png",
+              "https://c.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}.png",
+              "https://d.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}.png",
+            ],
+            tileSize: 256,
           },
         },
-        layers: [{ id: "osm-tiles", type: "raster", source: "osm" }],
-        glyphs:
-          "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
+        layers: [
+          { id: "carto-base", type: "raster", source: "carto" },
+          { id: "carto-labels", type: "raster", source: "carto-labels" },
+        ],
+        glyphs: "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
       },
       center: [14.25, 12.95], // Lake Chad
       zoom: 1.5,
       pitch: 0,
       bearing: 0,
       attributionControl: { compact: true },
+    });
+
+    // Surface tile load completion. Tile errors are caught by the
+    // map.on("error", ...) handler above.
+    map.on("sourcedata", (e) => {
+      if (e.sourceId === "carto" && e.isSourceLoaded) {
+        console.log("[globe] carto source fully loaded");
+        setDebug("tiles loaded");
+      }
     });
     mapRef.current = map;
 
@@ -278,7 +305,7 @@ export default function Globe({ selectedId, onSelectChange }: GlobeProps) {
       <div
         ref={containerRef}
         className="absolute inset-0"
-        style={{ background: "var(--color-surface-alt)" }}
+        style={{ background: "#1a2030" /* deep ink, so empty canvas is obvious */ }}
       />
 
       {/* Fatal error overlay (e.g. no WebGL) — visible explanation rather
