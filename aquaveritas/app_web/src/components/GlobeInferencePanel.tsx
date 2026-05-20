@@ -83,10 +83,21 @@ export default function GlobeInferencePanel({
         <h2 className="mt-2 font-[family-name:var(--font-display)] text-2xl leading-tight tracking-tight text-[color:var(--color-ink)]">
           {site.name}
         </h2>
-        <p className="mt-2 font-[family-name:var(--font-mono)] text-xs text-[color:var(--color-ink-faint)]">
-          {site.lat.toFixed(3)}°{site.lat >= 0 ? "N" : "S"} ·{" "}
-          {Math.abs(site.lon).toFixed(3)}°{site.lon >= 0 ? "E" : "W"}
-        </p>
+        <dl className="mt-3 space-y-1 font-[family-name:var(--font-mono)] text-xs text-[color:var(--color-ink-faint)]">
+          <div className="flex gap-2">
+            <dt className="w-16 uppercase tracking-[0.14em]">Coords</dt>
+            <dd>
+              {site.lat.toFixed(3)}°{site.lat >= 0 ? "N" : "S"} ·{" "}
+              {Math.abs(site.lon).toFixed(3)}°{site.lon >= 0 ? "E" : "W"}
+            </dd>
+          </div>
+          {site.capturedAt && (
+            <div className="flex gap-2">
+              <dt className="w-16 uppercase tracking-[0.14em]">Captured</dt>
+              <dd>{formatCaptureDate(site.capturedAt)}</dd>
+            </div>
+          )}
+        </dl>
       </div>
 
       {/* Tile preview */}
@@ -98,6 +109,26 @@ export default function GlobeInferencePanel({
           className="block h-48 w-full object-cover"
         />
       </div>
+
+      {/* Quality marker — only when the model flags image_quality_limited.
+          Surfaces BEFORE the inference fields so the user reads the
+          predictions with appropriate caution. */}
+      {state.kind === "done" && state.result.prediction.image_quality_limited && (
+        <div className="flex items-start gap-3 border-b border-[color:var(--color-rule)] bg-[color:var(--color-ochre)]/10 px-6 py-3">
+          <span
+            aria-hidden
+            className="mt-1 inline-block h-2 w-2 shrink-0 rounded-full bg-[color:var(--color-ochre-deep)]"
+          />
+          <p className="text-xs leading-relaxed text-[color:var(--color-ink)]">
+            <strong className="text-[color:var(--color-ochre-deep)]">
+              Image quality limited.
+            </strong>{" "}
+            Cloud cover, atmospheric interference, or sensor artefacts in this
+            capture may reduce prediction accuracy. Check the raw tile above
+            before acting on the fields below.
+          </p>
+        </div>
+      )}
 
       {/* Context blurb */}
       {site.blurb && (
@@ -228,4 +259,20 @@ function Skeleton() {
       <div className="h-2 w-2/3 animate-pulse bg-[color:var(--color-rule)]" />
     </div>
   );
+}
+
+/**
+ * Render the capture date in a compact, readable form: "1 Jul 2024".
+ * Uses the user's locale where the day comes first (en-GB style); falls
+ * back to the raw ISO string if the input doesn't parse.
+ */
+function formatCaptureDate(iso: string): string {
+  const d = new Date(iso + "T00:00:00Z");
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("en-GB", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    timeZone: "UTC",
+  });
 }
