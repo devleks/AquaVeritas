@@ -126,7 +126,24 @@ export default function Globe({ selectedId, onSelectChange }: GlobeProps) {
     // First "load" — fires after the first frame is rendered, not just style.
     map.on("load", () => {
       console.log("[globe] map.on(load) fired");
-      setDebug("loaded");
+      const canvas = map.getCanvas();
+      const container = map.getContainer();
+      const rect = container.getBoundingClientRect();
+      console.log("[globe] canvas px:", canvas.width, "x", canvas.height);
+      console.log(
+        "[globe] canvas style:",
+        canvas.style.width,
+        "x",
+        canvas.style.height,
+      );
+      console.log(
+        "[globe] container rect:",
+        Math.round(rect.width),
+        "x",
+        Math.round(rect.height),
+      );
+      console.log("[globe] container computed display:", getComputedStyle(container).display);
+      setDebug(`loaded · ${Math.round(rect.width)}×${Math.round(rect.height)}`);
       // Force a resize in case the container changed size during init.
       requestAnimationFrame(() => map.resize());
     });
@@ -270,10 +287,19 @@ export default function Globe({ selectedId, onSelectChange }: GlobeProps) {
 
   return (
     <div className="relative h-full w-full overflow-hidden">
+      {/*
+        Container sized with EXPLICIT width/height, not absolute inset-0.
+        MapLibre's CSS adds `.maplibregl-map { position: relative; }` to this
+        element after construction, which silently overrides position:absolute
+        and removes inset-0's top/bottom anchoring. The element then collapses
+        to height:0 because position:relative doesn't constrain dimensions
+        without an explicit height. h-full w-full survives MapLibre's class
+        injection because Tailwind's explicit dimensions stay applied.
+      */}
       <div
         ref={containerRef}
-        className="absolute inset-0"
-        style={{ background: "#1a2030" /* deep ink, so empty canvas is obvious */ }}
+        className="h-full w-full"
+        style={{ background: "#1a2030" }}
       />
 
       {/* Fatal error overlay (e.g. no WebGL) — visible explanation rather
