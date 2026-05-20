@@ -18,17 +18,19 @@ import {
  * Globe — MapLibre GL with native globe projection (v5+).
  *
  * Controlled component: parent owns `selectedId`. We emit changes through
- * `onSelectChange`. The visible detail / inference panel is rendered by the
- * parent (/globe page) using GlobeInferencePanel.
+ * `onSelectChange`. The detail / inference panel is rendered by the parent
+ * (/globe page) using GlobeInferencePanel.
  *
- * Tile source: OpenFreeMap "positron" — no API key, vector tiles, free CDN.
- * Markers: GeoJSON source with halo + dot circle layers, filtered by the
- * currently-enabled categories.
- * Legend doubles as the category filter — click a category chip to toggle.
+ * Tile source: CARTO dark_nolabels + dark_only_labels — public CDN with
+ * explicit CORS for any-origin use. Deep-ocean aesthetic that fits the
+ * AquaVeritas brand and lets warm-ochre site dots read clearly.
  *
- * Loading: no opaque overlay. The map renders progressively as MapLibre
- * paints tiles; an earlier shim version occluded the map when style.load
- * was slow or failed silently.
+ * Container sizing note: the inner ref div uses explicit `h-full w-full`
+ * (NOT `absolute inset-0`). MapLibre adds `.maplibregl-map { position:
+ * relative }` to the container, silently overriding position:absolute and
+ * collapsing the element to height:0 if there's no explicit height. Took a
+ * long debug session to find this; do not "simplify" back to absolute
+ * positioning without re-verifying tile rendering.
  */
 
 export interface GlobeProps {
@@ -40,6 +42,7 @@ export default function Globe({ selectedId, onSelectChange }: GlobeProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MLMap | null>(null);
   const [styleLoaded, setStyleLoaded] = useState(false);
+  const [fatal, setFatal] = useState<string | null>(null);
 
   const allCategories = useMemo(
     () => Object.keys(CATEGORY_LABEL) as SiteCategory[],
@@ -49,24 +52,19 @@ export default function Globe({ selectedId, onSelectChange }: GlobeProps) {
     () => new Set(allCategories),
   );
 
-  // Refresh the source on filter or selection change. Kept in a ref so the
-  // map event handlers always see the latest data without re-binding.
   const onSelectRef = useRef(onSelectChange);
   useEffect(() => {
     onSelectRef.current = onSelectChange;
   }, [onSelectChange]);
-
-  const [debug, setDebug] = useState<string>("init");
-  const [fatal, setFatal] = useState<string | null>(null);
 
   // ── Init the map ─────────────────────────────────────────────────────────
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
 
     // Hard precheck: WebGL must be available. Safari Private mode and some
-    // privacy extensions block the WebGL context entirely, and MapLibre will
-    // then fail without surfacing a useful error. Catching it ourselves lets
-    // us show the user a clear explanation instead of a blank canvas.
+    // privacy extensions block the WebGL context entirely; MapLibre then
+    // fails silently. Catching it ourselves means we can show the user a
+    // clear explanation rather than a blank canvas.
     const testCanvas = document.createElement("canvas");
     const hasWebGL = Boolean(
       testCanvas.getContext("webgl2") ||
@@ -74,89 +72,70 @@ export default function Globe({ selectedId, onSelectChange }: GlobeProps) {
         (testCanvas.getContext("experimental-webgl") as RenderingContext | null),
     );
     if (!hasWebGL) {
-      console.error("[globe] WebGL not available — map cannot render");
       setFatal(
         "WebGL is not available in this browser session. This commonly happens in Safari Private windows or with strict tracking-prevention. Switch to a normal window (or Chrome / Brave / Edge) to see the globe.",
       );
-      setDebug("no webgl");
       return;
     }
 
-    console.log("[globe] creating map instance");
-    setDebug("creating map");
-
-    // Raster OSM tiles instead of OpenFreeMap vector tiles. Trade-off:
-    //   - Visually less polished than positron (raw OSM colour palette)
-    //   - But: bulletproof. Just GET requests for PNGs. No style.json fetch,
-    //     no vector parsing, no CDN-specific behaviour. If raster doesn't
-    //     render, the failure is in the WebGL context or canvas sizing,
-    //     not in the tile pipeline.
-    // We can swap back to vector once /globe is verified working everywhere.
-    // MapLibre's own demo style — the most thoroughly tested style on the
-    // planet. Vector tiles + glyphs all served from demotiles.maplibre.org
-    // with explicit CORS. If THIS doesn't render, the problem is in our
-    // canvas/CSS setup, not the tile provider.
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: "https://demotiles.maplibre.org/style.json",
+      style: {
+        version: 8,
+        sources: {
+          carto: {
+            type: "raster",
+            tiles: [
+              "https://a.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png",
+              "https://b.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png",
+              "https://c.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png",
+              "https://d.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png",
+            ],
+            tileSize: 256,
+            attribution:
+              '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions">CARTO</a>',
+          },
+          "carto-labels": {
+            type: "raster",
+            tiles: [
+              "https://a.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}.png",
+              "https://b.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}.png",
+              "https://c.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}.png",
+              "https://d.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}.png",
+            ],
+            tileSize: 256,
+          },
+        },
+        layers: [
+          { id: "carto-base", type: "raster", source: "carto" },
+          { id: "carto-labels", type: "raster", source: "carto-labels" },
+        ],
+        glyphs: "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
+      },
       center: [14.25, 12.95], // Lake Chad
       zoom: 1.5,
       pitch: 0,
       bearing: 0,
       attributionControl: { compact: true },
     });
-
-    // Surface tile load completion. Tile errors are caught by the
-    // map.on("error", ...) handler above.
-    map.on("sourcedata", (e) => {
-      if (e.isSourceLoaded) {
-        console.log(`[globe] source "${e.sourceId}" fully loaded`);
-        setDebug(`tiles: ${e.sourceId}`);
-      }
-    });
     mapRef.current = map;
 
-    // Surface MapLibre errors during dev — silenced in prod by Next.
     map.on("error", (e) => {
-      const msg = e?.error?.message ?? String(e?.error ?? e);
       console.error("[globe] maplibre error", e?.error ?? e);
-      setDebug(`error: ${msg.slice(0, 80)}`);
     });
 
-    // First "load" — fires after the first frame is rendered, not just style.
     map.on("load", () => {
-      console.log("[globe] map.on(load) fired");
-      const canvas = map.getCanvas();
-      const container = map.getContainer();
-      const rect = container.getBoundingClientRect();
-      console.log("[globe] canvas px:", canvas.width, "x", canvas.height);
-      console.log(
-        "[globe] canvas style:",
-        canvas.style.width,
-        "x",
-        canvas.style.height,
-      );
-      console.log(
-        "[globe] container rect:",
-        Math.round(rect.width),
-        "x",
-        Math.round(rect.height),
-      );
-      console.log("[globe] container computed display:", getComputedStyle(container).display);
-      setDebug(`loaded · ${Math.round(rect.width)}×${Math.round(rect.height)}`);
-      // Force a resize in case the container changed size during init.
+      // Globe projection — sphere rendering for the orbital aesthetic.
+      try {
+        map.setProjection({ type: "globe" });
+      } catch {
+        /* mercator fallback on older clients */
+      }
+      // Belt-and-suspenders resize after first frame.
       requestAnimationFrame(() => map.resize());
     });
 
     map.on("style.load", () => {
-      console.log("[globe] style.load fired");
-      setDebug("style loaded");
-
-      // Globe projection deliberately disabled for now — investigating
-      // whether v5 globe + positron is the blank-canvas culprit. Mercator
-      // is reliable; the V2 plan can re-enable globe later.
-      // try { map.setProjection({ type: "globe" }); } catch {}
-
       try {
         map.addSource("sites", {
           type: "geojson",
@@ -169,7 +148,7 @@ export default function Globe({ selectedId, onSelectChange }: GlobeProps) {
           paint: {
             "circle-radius": ["interpolate", ["linear"], ["zoom"], 1, 8, 5, 18],
             "circle-color": ["get", "color"],
-            "circle-opacity": 0.18,
+            "circle-opacity": 0.22,
             "circle-stroke-width": 0,
           },
         });
@@ -203,12 +182,11 @@ export default function Globe({ selectedId, onSelectChange }: GlobeProps) {
       }
 
       setStyleLoaded(true);
-      console.log("[globe] sources/layers added, styleLoaded=true");
-      setDebug("ready");
     });
 
-    // Belt-and-suspenders: observe container resize so MapLibre repaints if
-    // layout shifts after init (common when fonts load and bump the page).
+    // ResizeObserver — MapLibre needs to know if its container resizes
+    // (font load, parent flex-grow, viewport rotation). Without this the
+    // canvas stays at its first-measure size and lags on layout shifts.
     const ro = new ResizeObserver(() => {
       map.resize();
     });
@@ -288,22 +266,16 @@ export default function Globe({ selectedId, onSelectChange }: GlobeProps) {
   return (
     <div className="relative h-full w-full overflow-hidden">
       {/*
-        Container sized with EXPLICIT width/height, not absolute inset-0.
-        MapLibre's CSS adds `.maplibregl-map { position: relative; }` to this
-        element after construction, which silently overrides position:absolute
-        and removes inset-0's top/bottom anchoring. The element then collapses
-        to height:0 because position:relative doesn't constrain dimensions
-        without an explicit height. h-full w-full survives MapLibre's class
-        injection because Tailwind's explicit dimensions stay applied.
+        Container MUST use explicit h-full w-full, NOT absolute inset-0.
+        See module comment above for why. The brand surface-alt background
+        is what shows for the brief moment before tiles paint.
       */}
       <div
         ref={containerRef}
-        className="h-full w-full"
-        style={{ background: "#1a2030" }}
+        className="h-full w-full bg-[color:var(--color-surface-alt)]"
       />
 
-      {/* Fatal error overlay (e.g. no WebGL) — visible explanation rather
-          than a blank canvas. Pointer-events-auto so the user can read it. */}
+      {/* Fatal-error overlay — visible explanation when WebGL is blocked. */}
       {fatal && (
         <div className="absolute inset-0 z-20 flex items-center justify-center bg-[color:var(--color-surface)]/95 p-12">
           <div className="max-w-md text-center">
@@ -322,26 +294,7 @@ export default function Globe({ selectedId, onSelectChange }: GlobeProps) {
         </div>
       )}
 
-      {/* Diagnostic banner — bottom of map area, bold and centred so it
-          cannot be missed during debugging. Shows MapLibre lifecycle state
-          + WebGL availability. Remove once /globe is verified everywhere. */}
-      <div className="pointer-events-none absolute bottom-3 left-1/2 z-30 -translate-x-1/2 rounded-sm border border-[color:var(--color-rule)] bg-[color:var(--color-surface)]/95 px-4 py-2 font-[family-name:var(--font-mono)] text-xs text-[color:var(--color-ink)] shadow-md backdrop-blur-sm">
-        <span className="uppercase tracking-[0.16em] text-[color:var(--color-ink-faint)]">
-          diag·
-        </span>{" "}
-        <span
-          className={
-            debug.startsWith("error") || debug === "no webgl"
-              ? "text-[color:var(--color-ochre-deep)]"
-              : "text-[color:var(--color-ink)]"
-          }
-        >
-          {debug}
-        </span>
-      </div>
-
-      {/* Legend / filter — pointer-events-none on wrapper so map underneath
-          stays clickable; the buttons re-enable pointer events. */}
+      {/* Legend / category filter */}
       <div className="pointer-events-none absolute left-6 top-6 z-10 flex flex-col gap-2 rounded-sm border border-[color:var(--color-rule)] bg-[color:var(--color-surface)]/95 p-4 text-xs shadow-sm backdrop-blur-sm">
         <p className="font-medium uppercase tracking-[0.18em] text-[color:var(--color-ink-faint)]">
           Click to filter
