@@ -85,9 +85,34 @@ export default function Globe({ selectedId, onSelectChange }: GlobeProps) {
     console.log("[globe] creating map instance");
     setDebug("creating map");
 
+    // Raster OSM tiles instead of OpenFreeMap vector tiles. Trade-off:
+    //   - Visually less polished than positron (raw OSM colour palette)
+    //   - But: bulletproof. Just GET requests for PNGs. No style.json fetch,
+    //     no vector parsing, no CDN-specific behaviour. If raster doesn't
+    //     render, the failure is in the WebGL context or canvas sizing,
+    //     not in the tile pipeline.
+    // We can swap back to vector once /globe is verified working everywhere.
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: "https://tiles.openfreemap.org/styles/positron",
+      style: {
+        version: 8,
+        sources: {
+          osm: {
+            type: "raster",
+            tiles: [
+              "https://a.tile.openstreetmap.org/{z}/{x}/{y}.png",
+              "https://b.tile.openstreetmap.org/{z}/{x}/{y}.png",
+              "https://c.tile.openstreetmap.org/{z}/{x}/{y}.png",
+            ],
+            tileSize: 256,
+            attribution:
+              '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+          },
+        },
+        layers: [{ id: "osm-tiles", type: "raster", source: "osm" }],
+        glyphs:
+          "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
+      },
       center: [14.25, 12.95], // Lake Chad
       zoom: 1.5,
       pitch: 0,
@@ -276,11 +301,22 @@ export default function Globe({ selectedId, onSelectChange }: GlobeProps) {
         </div>
       )}
 
-      {/* Diagnostic badge — shows MapLibre lifecycle state so we can see
-          if the canvas is initialising or failing silently. Bottom-LEFT so
-          the inference panel on the right doesn't cover it. */}
-      <div className="pointer-events-none absolute bottom-3 left-3 z-10 rounded-sm bg-[color:var(--color-surface)]/90 px-2 py-1 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-[0.16em] text-[color:var(--color-ink-muted)] backdrop-blur-sm">
-        globe: {debug}
+      {/* Diagnostic banner — bottom of map area, bold and centred so it
+          cannot be missed during debugging. Shows MapLibre lifecycle state
+          + WebGL availability. Remove once /globe is verified everywhere. */}
+      <div className="pointer-events-none absolute bottom-3 left-1/2 z-30 -translate-x-1/2 rounded-sm border border-[color:var(--color-rule)] bg-[color:var(--color-surface)]/95 px-4 py-2 font-[family-name:var(--font-mono)] text-xs text-[color:var(--color-ink)] shadow-md backdrop-blur-sm">
+        <span className="uppercase tracking-[0.16em] text-[color:var(--color-ink-faint)]">
+          diag·
+        </span>{" "}
+        <span
+          className={
+            debug.startsWith("error") || debug === "no webgl"
+              ? "text-[color:var(--color-ochre-deep)]"
+              : "text-[color:var(--color-ink)]"
+          }
+        >
+          {debug}
+        </span>
       </div>
 
       {/* Legend / filter — pointer-events-none on wrapper so map underneath
