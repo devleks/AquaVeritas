@@ -2111,6 +2111,348 @@ print(json.dumps(result, indent=2))
 
 ---
 
+## 12. Web App (`app_web/`)
+
+The v2 public website. Next.js 16 + React 19 + Tailwind v4 + Turbopack.
+Lives at `aquaveritas/app_web/`, parallel to the legacy Streamlit `app/`.
+All commands in this section run from `aquaveritas/app_web/` unless noted.
+
+### Scaffold the Next.js app (one-time)
+```bash
+npx --yes create-next-app@latest app_web \
+  --typescript \
+  --tailwind \
+  --eslint \
+  --app \
+  --src-dir \
+  --use-npm \
+  --turbopack \
+  --import-alias "@/*" \
+  --no-git
+```
+**Purpose:** Bootstraps the entire `app_web/` directory with App Router,
+TypeScript, Tailwind v4 (CSS-first config), Turbopack as the default
+bundler, and the `@/*` import alias. Used exactly once at the start of v2.
+**Sample output:**
+```
+Installing devDependencies:
+- @tailwindcss/postcss
+- @types/node
+- @types/react
+- @types/react-dom
+- eslint
+- eslint-config-next
+- tailwindcss
+- typescript
+added 360 packages, and audited 361 packages in 43s
+Success! Created app_web at /Users/ml_labs/claudey/SimSat/aquaveritas/app_web
+```
+**Notes:**
+- Run from `aquaveritas/` (not `aquaveritas/app_web/`). The command creates
+  the directory.
+- Next.js 16 has breaking changes from 15: async `params`/`searchParams`,
+  Turbopack default, top-level `turbopack` config. Read
+  `app_web/node_modules/next/dist/docs/01-app/02-guides/upgrading/version-16.md`
+  before doing migrations.
+- After scaffold, an `AGENTS.md` and `CLAUDE.md` get auto-created at the
+  root of `app_web/` reminding tools to read the bundled docs.
+
+### Install browser-side ML dependencies
+```bash
+cd app_web
+npm install maplibre-gl@^5
+npm install onnxruntime-web
+npm install @huggingface/transformers
+```
+**Purpose:** Three libraries that power the public site:
+- `maplibre-gl@5` — the WebGL globe on `/globe` (vector tiles + native
+  globe projection support)
+- `onnxruntime-web` — browser ONNX runtime with WebGPU execution
+  provider (used transitively by transformers.js)
+- `@huggingface/transformers` (v4.2) — Auto classes for loading
+  LFM2.5-VL via `AutoProcessor` + `AutoModelForImageTextToText`. Powers
+  the WebGPU/WASM real-inference path on `/live`.
+**Sample output:**
+```
+added 12 packages, and audited 372 packages in 6s
+ort-web: 1.26.0
+transformers.js: 4.2.0
+```
+**Notes:**
+- Pin maplibre at `^5` for the globe projection. Earlier versions don't
+  expose `setProjection({type: "globe"})`.
+- onnxruntime-web's `package.json` is locked behind ESM exports — direct
+  `require("onnxruntime-web/package.json")` fails; use `node_modules`
+  inspection or read the package's version field via `import`.
+
+### Run the dev server (foreground)
+```bash
+cd app_web
+npm run dev
+```
+**Purpose:** Starts Next.js dev server on `http://localhost:3000` with
+Turbopack + HMR. Foreground mode for interactive use.
+**Sample output:**
+```
+▲ Next.js 16.2.6 (Turbopack)
+  Local:   http://localhost:3000
+  Environments: .env
+
+✓ Ready in 1.2s
+```
+**Notes:**
+- `--turbopack` flag is no longer needed in Next.js 16 (Turbopack is
+  default). `package.json` `dev` script is just `next dev`.
+- Stop with `Ctrl+C`.
+
+### Run the dev server in background
+```bash
+cd app_web
+npm run dev > /tmp/aquaveritas_dev.log 2>&1 &
+```
+**Purpose:** Backgrounds the dev server so the terminal stays interactive.
+Logs to `/tmp/aquaveritas_dev.log` for later inspection. Used during the
+v2 build sessions so we could `curl` against routes from the same shell.
+**Sample output:**
+```
+[1] 3555
+```
+**Notes:**
+- Find the PID later with `lsof -ti :3000`.
+- Stop with `lsof -ti :3000 | xargs kill`.
+- Tail the log: `tail -f /tmp/aquaveritas_dev.log`.
+
+### Production build (verification before deploy)
+```bash
+cd app_web
+npm run build
+```
+**Purpose:** Type-checks all TS, compiles with Turbopack, prerenders
+static routes. Run before every commit to verify nothing broke. ~3-5s
+warm. The static-route summary at the end tells you which pages successfully prerendered.
+**Sample output:**
+```
+▲ Next.js 16.2.6 (Turbopack)
+
+  Creating an optimized production build ...
+✓ Compiled successfully in 3.6s
+  Running TypeScript ...
+  Finished TypeScript in 1340ms ...
+✓ Generating static pages using 7 workers (5/5) in 251ms
+
+Route (app)
+┌ ○ /
+├ ○ /_not-found
+├ ○ /globe
+├ ○ /live
+└ ○ /methodology
+
+○  (Static)  prerendered as static content
+```
+**Notes:**
+- `O (Static)` means the page is fully prerendered HTML — no server
+  required at runtime.
+- A "Type error" message means TS failed; the build aborts. Fix
+  before continuing.
+- Turbopack warning about multiple lockfiles is benign — root lockfile
+  is `app_web/package-lock.json`, parent SimSat dir also has one. Set
+  `turbopack.root` in `next.config.ts` to silence permanently.
+
+### Verify dev server health + routes
+```bash
+lsof -ti :3000 | head -1
+for r in / /globe /methodology /live; do
+  code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:3000$r")
+  printf "%-30s HTTP %s\n" "$r" "$code"
+done
+```
+**Purpose:** Confirms the dev server is alive, then issues a HEAD-equivalent
+GET against every route to make sure they all serve 200. The fastest way
+to detect a route blowing up after a refactor.
+**Sample output:**
+```
+44315
+/                              HTTP 200
+/globe                         HTTP 200
+/methodology                   HTTP 200
+/live                          HTTP 200
+```
+**Notes:**
+- 200 only confirms the HTML rendered. Client-side hydration could still
+  fail — check the browser console for runtime errors.
+- For asset checks: `curl -s -o /dev/null -w "%{http_code} %{size_download}B\n" http://localhost:3000/sample_tiles/lake_chad.webp`.
+
+### Verify MapLibre CSS is bundled and served
+```bash
+curl -s http://localhost:3000/globe | grep -oE '<link[^>]+\.css[^>]*>' | head -5
+curl -s "http://localhost:3000/_next/static/chunks/<the-maplibre-css-chunk>.css" | head -c 500
+```
+**Purpose:** During the MapLibre blank-canvas debug session, we needed to
+prove whether `maplibre-gl.css` was actually being delivered by Turbopack.
+The first call lists all `<link rel="stylesheet">` references in the page
+HTML; the second fetches the actual CSS chunk to verify the critical rules
+(`.maplibregl-map`, `.maplibregl-canvas`) are present.
+**Sample output:**
+```
+<link rel="stylesheet" href="/_next/static/chunks/[root-of-the-server]__0-ntbtp._.css"/>
+<link rel="stylesheet" href="/_next/static/chunks/0joa_maplibre-gl_dist_maplibre-gl_0.5gc.b.css"/>
+
+/* node_modules/maplibre-gl/dist/maplibre-gl.css [app-client] (css) */
+.maplibregl-map {
+  -webkit-tap-highlight-color: #0000;
+  font: 12px / 20px Helvetica Neue, Arial, Helvetica, sans-serif;
+  position: relative;
+  overflow: hidden;
+}
+
+.maplibregl-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+```
+**Notes:**
+- The chunk filename hash changes on every build. Get the current name
+  from the first command's output, then plug into the second.
+- **Critical insight from this debugging:** MapLibre sets
+  `position: relative` on the container via the `.maplibregl-map` class.
+  If your container relies on `position: absolute; inset: 0;` for sizing,
+  MapLibre's class injection will override it and the container collapses
+  to `height: 0`. Always size the MapLibre container with explicit
+  `h-full w-full` (or px values), never `inset-0`. See `Globe.tsx`
+  module docstring for the full incident note.
+
+---
+
+## 13. Demo Tile Bundle (`scripts/copy_web_samples.py`)
+
+Produces the WebP display tiles served from `app_web/public/sample_tiles/`.
+Display-only — these are NOT model input (`scripts/resize_images.py` is the
+canonical resizer for inference). The web demo uses WebP for ~6× better
+compression than optimised PNG at perceptually equivalent quality.
+
+### Generate WebP tiles for all 20 monitored sites
+```bash
+cd /Users/ml_labs/claudey/SimSat/aquaveritas
+python3 scripts/copy_web_samples.py
+```
+**Purpose:** Picks the most visually informative Sentinel-2 pass per site
+(dry-season for shrinkage sites, peak-flood for flooding sites,
+clear-summer for alpine/mixed sites), resizes with LANCZOS to ≤512px,
+encodes WebP at quality 88, and writes to `app_web/public/sample_tiles/`.
+Used after each fresh data collection run, or whenever the tile selection
+changes.
+**Sample output:**
+```
+src data/images
+dst app_web/public/sample_tiles
+budget 100 KB · max 512 px · q=88 (WebP)
+
+  lake_chad                 ✓ 45 KB @ 512×508 (src 3163 KB) → lake_chad.webp
+  aral_sea                  ✓ 57 KB @ 512×510 (src 4026 KB) → aral_sea.webp
+  okavango                  ✓ 70 KB @ 512×508 (src 3558 KB) → okavango.webp
+  tonle_sap                 ✓ 48 KB @ 512×508 (src 3156 KB) → tonle_sap.webp
+  po_valley                 ✓ 30 KB @ 512×510 (src 3232 KB) → po_valley.webp
+  ...
+  20/20 tiles written.
+```
+**Notes:**
+- Total bundle ~1.1 MB across 20 tiles. Fits comfortably in a static
+  site asset budget.
+- The script's `TILES` list at the top defines per-site dates. Update
+  there if a new collection produces a more informative pass at a
+  different date.
+- Established pattern from `scripts/resize_images.py` (LANCZOS, optimize,
+  iterative halving with 256 px floor) preserved with one justified
+  deviation: WebP not PNG, because the use case is display in a 400px
+  card, not model input.
+
+### Dry-run — preview without writing
+```bash
+python3 scripts/copy_web_samples.py --dry-run
+```
+**Purpose:** Show what WOULD be written and at what sizes, without
+touching `app_web/public/sample_tiles/`. Useful before a CI build or
+when validating a new tile selection.
+**Sample output:**
+```
+  lake_chad     would write 45 KB @ 512×508 (src 3163 KB)
+  aral_sea      would write 57 KB @ 512×510 (src 4026 KB)
+  ...
+```
+
+### Tighter byte budget (for hard size limits)
+```bash
+python3 scripts/copy_web_samples.py --max-bytes 51200 --quality 75
+```
+**Purpose:** Override defaults if the static-site bundle gets too heavy.
+50 KB / q75 produces tiles that lose some fidelity at zoom-in but stay
+crisp at the gallery thumbnail size.
+
+### Survey available capture dates per site (planning)
+```bash
+for site in lake_chad aral_sea okavango tonle_sap po_valley; do
+  for d in 2024-01-01 2024-04-01 2024-07-01 2024-10-01; do
+    f="data/images/$site/$d/rgb_core.png"
+    [ -f "$f" ] && echo "$site $d: $(du -h $f | cut -f1)"
+  done
+done
+```
+**Purpose:** Tile size ≈ amount of varied content. A near-uniform tile
+(all snow, all cloud) compresses to single-digit KB; a tile with mixed
+content (water + vegetation + agriculture) hits multi-MB. Use this to
+pick the most informative pass per site before updating
+`copy_web_samples.py` `TILES`.
+**Sample output:**
+```
+lake_chad 2024-01-01: 3.1M     ← dry season, lots of content
+lake_chad 2024-04-01: 2.9M
+po_valley 2024-01-01:  12K     ← snow/cloud, skip
+po_valley 2024-07-01: 3.2M     ← summer, good
+po_valley 2024-10-01: 3.2M
+```
+
+---
+
+## 14. ONNX Export Pipeline (`scripts/export_onnx.py`)
+
+Scaffolded but not yet executed end-to-end. The script converts the
+fine-tuned LFM2.5-VL safetensors checkpoint to ONNX fp16 for the
+browser-native WebGPU inference path on `/live`. Currently the `/live`
+page falls back to `onnx-community/LFM2.5-VL-450M-ONNX` (the base model)
+because the safetensors checkpoint from our `leap-finetune` run was
+never preserved — the GGUF conversion was the only output retained.
+
+### Prerequisite check (dry-run)
+```bash
+python3 scripts/export_onnx.py --checkpoint /tmp/fake --dry-run
+```
+**Purpose:** Validates the environment has `torch`, `transformers`,
+`onnx`, and `onnxruntime` available before attempting the multi-GB
+export. Tells you exactly which packages to install if missing.
+**Sample output:**
+```
+=== AquaVeritas ONNX export ===
+  checkpoint    /tmp/fake
+  processor     LiquidAI/LFM2.5-VL-450M
+  output        data/models/aquaveritas-lfm.onnx
+  opset         17
+  precision     fp16
+
+Missing required packages: onnx
+Install with:
+  pip install "torch>=2.4" "transformers>=4.45" "onnx>=1.16" \
+              "onnxruntime>=1.18" "optimum[onnxruntime]>=1.21" "pillow"
+```
+**Notes:**
+- Needs a real safetensors checkpoint to actually export. Until we rerun
+  `leap-finetune` with the checkpoint saved (instead of immediately
+  converting to GGUF), this script is a scaffolded promise.
+- See `scripts/export_onnx.py` docstring for the full prerequisite chain
+  and known operator-support gotchas.
+
+---
+
 ## Quick Reference
 
 | Command | Stage | Duration |
@@ -2149,6 +2491,13 @@ print(json.dumps(result, indent=2))
 
 ## Changelog
 
+- **2026-05-20** — Added §12 Web App (Next.js 16 scaffold, dependency install,
+  dev server foreground + background, production build, route health check,
+  served-CSS verification), §13 Demo Tile Bundle (`scripts/copy_web_samples.py`
+  + dry-run + tighter-budget variants + survey-by-season helper), §14 ONNX
+  Export Pipeline prerequisite check. Captures the v2 frontend build out and
+  the MapLibre container-collapse fix (`h-full w-full` not `absolute inset-0`,
+  because `.maplibregl-map` injects `position: relative`).
 - **2026-05-08** — Added §8h Git Remote Recovery (diagnose, re-add origin,
   cherry-pick over rebase, set-upstream). Captures the SHA-only divergence
   pattern observed after the GitHub-side `devleks/SimSat` → `devleks/AquaVeritas`
